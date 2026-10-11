@@ -20,7 +20,7 @@ closure-engine = "closure_engine.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-closure_engine = ["schemas/v1/*.json"]
+closure_engine = ["schemas/v1/*.json", "web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
