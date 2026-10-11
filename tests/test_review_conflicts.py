@@ -130,6 +130,7 @@ def test_F06_10_valid_control_identical_receipt_is_not_a_conflict(run):
         result = judge(run, receipts=duplicate)
         assert result.verdict == "PROVEN"
 
+
 # --- Follow-up coverage: two enrolled verifiers and differing receipt IDs -------------------------
 # Builds a second TrustStore and rebinds the contract inside each test; shared fixtures are untouched.
 
@@ -146,9 +147,7 @@ def multi_run(run, tmp_path):
     keys = dict(run["keys"])
     keys["verifier2"] = Identity.generate("verifier", V2)
     checks = [c["id"] for c in run["contract"]["checks"]]
-    trust = TrustStore.from_identities(
-        [keys[r] for r in ROLES] + [keys["verifier2"]], verifier_checks=checks
-    )
+    trust = TrustStore.from_identities([keys[r] for r in ROLES] + [keys["verifier2"]], verifier_checks=checks)
     contract = copy.deepcopy(run["contract"])
     contract["trust_hash"] = trust.hash
     for c in contract["checks"]:
@@ -182,8 +181,14 @@ def multi_run(run, tmp_path):
     )
     store = EvidenceStore(tmp_path / "multi-evidence")
     m = dict(
-        keys=keys, trust=trust, frozen=frozen, binding=binding, store=store, contract=contract,
-        start=run["start"], artifact=run["artifact"],
+        keys=keys,
+        trust=trust,
+        frozen=frozen,
+        binding=binding,
+        store=store,
+        contract=contract,
+        start=run["start"],
+        artifact=run["artifact"],
     )
 
     def observe(verifier_identity, check_id, result="PASS", index=0, offset=0):
@@ -262,14 +267,16 @@ def multi_judge(m, records=(), receipts=None):
 def assert_only_conflict_rejected(result):
     # Receipts and contract binding were admitted; the only rejections are the conflicting observations.
     assert {r["reason"] for r in result.rejected} <= {"REPLAYED_OR_CONFLICTING_OBSERVATION"}
-    assert result.verdict in {"DISPROVEN", "INDETERMINATE"}
-    assert result.checks["primary"] in {"FAIL", "UNKNOWN"}
+    assert result.verdict == "DISPROVEN"
+    assert result.checks["primary"] == "FAIL"
 
 
 def test_F06_11_two_verifiers_pass_vs_fail_conflict_order_invariant(run, tmp_path):
     m = multi_run(run, tmp_path)
-    conflict = [m["observe"](m["keys"]["verifier"], "primary", "PASS"),
-                m["observe"](m["keys"]["verifier2"], "primary", "FAIL")]
+    conflict = [
+        m["observe"](m["keys"]["verifier"], "primary", "PASS"),
+        m["observe"](m["keys"]["verifier2"], "primary", "FAIL"),
+    ]
     first = multi_judge(m, records=conflict)
     assert_only_conflict_rejected(first)
     assert first.to_dict() == multi_judge(m, records=list(reversed(conflict))).to_dict()
@@ -277,8 +284,10 @@ def test_F06_11_two_verifiers_pass_vs_fail_conflict_order_invariant(run, tmp_pat
 
 def test_F06_12_two_verifiers_fail_vs_pass_conflict_order_invariant(run, tmp_path):
     m = multi_run(run, tmp_path)
-    conflict = [m["observe"](m["keys"]["verifier"], "primary", "FAIL"),
-                m["observe"](m["keys"]["verifier2"], "primary", "PASS")]
+    conflict = [
+        m["observe"](m["keys"]["verifier"], "primary", "FAIL"),
+        m["observe"](m["keys"]["verifier2"], "primary", "PASS"),
+    ]
     first = multi_judge(m, records=conflict)
     assert_only_conflict_rejected(first)
     assert first.to_dict() == multi_judge(m, records=list(reversed(conflict))).to_dict()

@@ -20,6 +20,11 @@ Envelope family names remain v1; the stronger policy is explicitly digest-bound.
 
 F06 is a test-only external Haiku worktree; root reviews and independently runs its contribution.
 Non-admissible observations never become failures merely because they contain the word FAIL.
+Its multi-verifier extension exposed a digest-order dependence: a fully authenticated, bound
+mandatory FAIL could be rejected after an earlier PASS consumed the nonce, yielding UNKNOWN.
+Root retained a forced PASS-first red test and now preserves qualified failure/tamper signals
+before nonce-conflict exclusion. Both contradictory digest orders yield DISPROVEN. Evidence
+without a valid challenge, signature, binding, bytes or freshness remains excluded.
 
 Remaining production review work is separately tracked: F02 operator-authenticated enrollment,
 rotation/revocation; F03 hostile filesystem custody and no-follow guarantees; F04 explicit

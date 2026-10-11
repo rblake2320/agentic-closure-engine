@@ -29,17 +29,25 @@ def test_packet_replay_valid_control_without_signing_key(run, tmp_path):
     assert replay_packet(signed, run["store"], run["trust"])["verdict"] == "PROVEN"
 
 
-@pytest.mark.parametrize("field,value", [("admitted", []), ("rejected", []),
-                                        ("reason_codes", ["INVENTED_REASON"]),
-                                        ("window_end", "2026-10-11T12:02:00Z")])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("admitted", []),
+        ("rejected", []),
+        ("reason_codes", ["INVENTED_REASON"]),
+        ("window_end", "2026-10-11T12:02:00Z"),
+    ],
+)
 def test_packet_replay_checks_all_claims(run, tmp_path, field, value):
     ledger = begin(run, tmp_path)
     signed = packet(run, ledger, records=[])
     body = copy.deepcopy(signed["payload"]["body"])
     if body[field] == value:
-        body[field] = ["sha256:" + "0" * 64] if field == "admitted" else [{
-            "hash": "sha256:" + "0" * 64, "reason": "INVENTED_REASON"
-        }]
+        body[field] = (
+            ["sha256:" + "0" * 64]
+            if field == "admitted"
+            else [{"hash": "sha256:" + "0" * 64, "reason": "INVENTED_REASON"}]
+        )
     else:
         body[field] = value
     altered = sign(run["keys"]["authority"], "closure-packet", body, signed["payload"]["created_at"])

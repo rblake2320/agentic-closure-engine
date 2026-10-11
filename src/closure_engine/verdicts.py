@@ -57,6 +57,7 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
     checks = {ch["id"]: ch for ch in c["checks"]}
     admitted, rejected, observations = {}, {}, {key: [] for key in checks}
     seen_ids, consumed_nonces, conflicted_checks = {}, {}, set()
+    qualified_failures, qualified_tamper = set(), set()
     receipt_states, receipt_hashes, receipt_ids = set(), set(), {}
     receipt_conflict = False
     for envelope in sorted(receipts, key=digest):
@@ -156,6 +157,13 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
             evidence = store.get(body["evidence_hash"])
             if check["kind"] == "baseline" and digest(evidence) != c["baseline_hash"]:
                 raise ClosureError("BASELINE_EVIDENCE_MISMATCH")
+            # Authenticated, bound, fresh failure is a failure signal even when a
+            # contradictory envelope consumed this challenge first. Hash ordering
+            # must not decide whether a mandatory failure occurred.
+            if body["result"] == "FAIL":
+                qualified_failures.add(body["check_id"])
+            if body["tamper_detected"]:
+                qualified_tamper.add(body["check_id"])
             obs_hash = digest(envelope)
             if body["observation_id"] in seen_ids or body["nonce"] in consumed_nonces:
                 if seen_ids.get(body["observation_id"]) == obs_hash and (
@@ -178,8 +186,8 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
     for key, check in checks.items():
         samples = observations[key]
         results = {s["result"] for s in samples}
-        check_tamper = any(s["tamper_detected"] for s in samples)
-        if "FAIL" in results or check_tamper:
+        check_tamper = key in qualified_tamper
+        if key in qualified_failures or check_tamper:
             outcomes[key] = "FAIL"
             known_failure |= check["mandatory"]
             tamper |= check_tamper
