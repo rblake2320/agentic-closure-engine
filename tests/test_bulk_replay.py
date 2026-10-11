@@ -90,3 +90,70 @@ def test_bulk_never_replaces_an_existing_verified_history(run, history):
     with pytest.raises(ClosureError, match="IMPORT_TARGET_NOT_EMPTY"):
         target.import_history([run["frozen"]], events, checkpoint)
     assert target.sequence == 9
+
+
+ROLE_OF_STATE = {
+    "DRAFT": "actor",
+    "APPROVED": "owner",
+    "BASELINED": "verifier",
+    "EXECUTING": "broker",
+    "VERIFYING": "broker",
+    "ACCEPTED": "owner",
+}
+
+
+def _resign_chain(run, events, start_index):
+    """Re-sign events from ``start_index`` with consistent sequence and previous-hash links,
+    as an insider holding every role key could. Signatures are valid; history is not."""
+    from closure_engine.protocol import digest
+
+    out = copy.deepcopy(events[:start_index])
+    for envelope in events[start_index:]:
+        body = copy.deepcopy(envelope["payload"]["body"])
+        body["sequence"] = len(out) + 1
+        body["previous_hash"] = digest(out[-1]) if out else GENESIS
+        role = ROLE_OF_STATE.get(body["state"], "authority")
+        out.append(sign(run["keys"][role], "ledger-event", body, envelope["payload"]["created_at"]))
+    return out
+
+
+def _nothing_committed(target):
+    assert target.summary() == {"verified_head": GENESIS, "sequence": 0, "transactions": {}}
+    with target._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM contracts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_bulk_list_order_does_not_change_the_committed_history(run, history):
+    source, target, events, checkpoint = history
+    shuffled = [events[i] for i in (0, 1, 2, 3, 4, 6, 5, 7, 8)]  # transport order only
+    result = target.import_history([run["frozen"]], shuffled, checkpoint)
+    assert result["verified_head"] == source.head and result["sequence"] == 9
+
+
+def test_bulk_resigned_reordered_history_is_refused_and_rolled_back(run, history):
+    _, target, events, checkpoint = history
+    swapped = events[:5] + [events[6], events[5]] + events[7:]  # OBSERVING before VERIFYING
+    forged = _resign_chain(run, swapped, 5)
+    with pytest.raises(ClosureError, match="ILLEGAL_TRANSITION"):
+        target.import_history([run["frozen"]], forged, checkpoint)
+    _nothing_committed(target)
+
+
+def test_bulk_duplicate_event_is_refused_and_rolled_back(run, history):
+    _, target, events, checkpoint = history
+    with pytest.raises(ClosureError, match="LEDGER_STORAGE_ERROR"):
+        target.import_history([run["frozen"]], events + [events[-1]], checkpoint)
+    _nothing_committed(target)
+
+
+def test_bulk_duplicate_event_id_with_new_sequence_is_refused_and_rolled_back(run, history):
+    _, target, events, checkpoint = history
+    from closure_engine.protocol import digest
+
+    body = copy.deepcopy(events[-1]["payload"]["body"])
+    body.update(sequence=10, previous_hash=digest(events[-1]))  # same event_id, appended
+    duplicate = sign(run["keys"]["owner"], "ledger-event", body, events[-1]["payload"]["created_at"])
+    with pytest.raises(ClosureError, match="LEDGER_STORAGE_ERROR"):
+        target.import_history([run["frozen"]], events + [duplicate], checkpoint)
+    _nothing_committed(target)

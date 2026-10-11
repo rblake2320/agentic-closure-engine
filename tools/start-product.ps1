@@ -10,6 +10,22 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtime = if ($RuntimeDirectory) { [IO.Path]::GetFullPath($RuntimeDirectory) } else { Join-Path $projectRoot '.runtime' }
+function Enter-StartupLock {
+    # One host-wide exclusive lock serialises every ACE start (any deployment name), so the
+    # single-authority check and compose up cannot interleave with another start. The OS
+    # releases the handle if this process dies, so a crashed start never leaves a stale lock.
+    $lockPath = if ($env:ACE_START_LOCK) { $env:ACE_START_LOCK } else {
+        Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'agentic-closure-engine\start.lock'
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $lockPath) -Force | Out-Null
+    try {
+        return [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [System.IO.IOException] {
+        [Console]::Error.WriteLine("ACE_START_BUSY: another ACE startup holds the host startup lock ($lockPath). Retry after it finishes.")
+        exit 75
+    }
+}
+$startupLock = Enter-StartupLock
 function Assert-SingleAuthority([string]$TrustPin) {
     # Labels cover current deployments; the custody fallback also covers installations predating labels.
     $matchingIds = @(& docker ps --filter "label=ace.trust_hash=$TrustPin" --format '{{.ID}}')
@@ -33,6 +49,7 @@ function Assert-SingleAuthority([string]$TrustPin) {
         if ($otherPin -eq $TrustPin) { throw "Another signing authority with this enrollment is active: $otherProject. Stop it before starting $DeploymentName." }
     }
 }
+try {
 $existingPin = Join-Path $runtime 'trust.pin'
 if (Test-Path -LiteralPath $existingPin) { Assert-SingleAuthority ((Get-Content -Raw -LiteralPath $existingPin).Trim()) }
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
@@ -71,6 +88,8 @@ try {
     Assert-SingleAuthority $env:ACE_TRUST_HASH
     & docker @composeArgs up -d
     if ($LASTEXITCODE -ne 0) { throw 'ACE startup failed; state is retained for diagnosis.' }
+    # The guard and compose up are complete; health polling does not need the host lock.
+    $startupLock.Dispose()
     $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
     do {
         try {
@@ -87,4 +106,7 @@ try {
 } finally {
     $env:ACE_RUNTIME_DIRECTORY, $env:ACE_CONSOLE_PORT, $env:ACE_PUBLISHER_PORT, $env:ACE_TRUST_HASH = $previousRuntime, $previousConsole, $previousPublisher, $previousTrust
     Pop-Location
+}
+} finally {
+    $startupLock.Dispose()  # idempotent; releases on every failure path
 }
