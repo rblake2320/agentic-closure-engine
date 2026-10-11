@@ -1,0 +1,132 @@
+name: agentic-closure-engine
+x-service: &service
+  image: agentic-closure-engine:0.3.0
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 384m
+  cpus: 1
+  pids_limit: 64
+  tmpfs: ['/tmp:size=64m,mode=1777']
+  restart: unless-stopped
+  labels:
+    ace.product: closure-engine
+    ace.trust_hash: ${ACE_TRUST_HASH:-bootstrap-pending}
+  networks: [roles]
+  depends_on:
+    bootstrap: {condition: service_completed_successfully}
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+services:
+  bootstrap:
+    image: agentic-closure-engine:0.3.0
+    build: .
+    user: '0:0'
+    labels: {ace.product: closure-engine}
+    command: [bootstrap]
+    network_mode: none
+    volumes:
+      - actor-key:/volumes/keys/actor
+      - owner-key:/volumes/keys/owner
+      - authority-key:/volumes/keys/authority
+      - verifier-key:/volumes/keys/verifier
+      - broker-key:/volumes/keys/broker
+      - operator:/volumes/operator
+      - actor-auth:/volumes/auth/actor
+      - owner-auth:/volumes/auth/owner
+      - authority-auth:/volumes/auth/authority
+      - verifier-auth:/volumes/auth/verifier
+      - broker-auth:/volumes/auth/broker
+      - custody-auth:/volumes/custody-auth
+      - custody-data:/volumes/custody-data
+      - broker-intents:/volumes/broker-intents
+      - gateway-data:/volumes/gateway
+      - gateway-auth:/volumes/gateway-auth
+      - ${ACE_RUNTIME_DIRECTORY:-./.runtime}:/volumes/exports
+      - ${ACE_RUNTIME_DIRECTORY:-./.runtime}/target-profile.json:/input/target-profile.json:ro
+  custody:
+    <<: *service
+    user: '11006:11006'
+    command: [custody]
+    volumes:
+      - operator:/state/operator:ro
+      - custody-data:/state/custodian
+      - custody-auth:/auth:ro
+  actor:
+    <<: *service
+    user: '11001:11001'
+    command: [actor]
+    networks: [roles, targets]
+    volumes:
+      - actor-key:/state/actor:ro
+      - operator:/state/operator:ro
+      - actor-auth:/auth:ro
+  owner:
+    <<: *service
+    user: '11002:11002'
+    command: [owner]
+    volumes:
+      - owner-key:/state/owner:ro
+      - operator:/state/operator:ro
+      - owner-auth:/auth:ro
+  authority:
+    <<: *service
+    user: '11003:11003'
+    command: [authority]
+    volumes:
+      - authority-key:/state/authority:ro
+      - operator:/state/operator:ro
+      - authority-auth:/auth:ro
+  verifier:
+    <<: *service
+    user: '11004:11004'
+    command: [verifier]
+    networks: [roles, targets]
+    volumes:
+      - verifier-key:/state/verifier:ro
+      - operator:/state/operator:ro
+      - verifier-auth:/auth:ro
+  broker:
+    <<: *service
+    user: '11005:11005'
+    command: [broker]
+    networks: [roles, targets]
+    volumes:
+      - broker-key:/state/broker:ro
+      - broker-intents:/state/broker/intents
+      - operator:/state/operator:ro
+      - broker-auth:/auth:ro
+  gateway:
+    <<: *service
+    user: '11007:11007'
+    command: [gateway]
+    environment:
+      ACE_PUBLIC_PORT: ${ACE_CONSOLE_PORT:-8782}
+    networks: [roles, frontend, integration]
+    volumes:
+      - gateway-data:/gateway:ro
+      - gateway-auth:/gateway-auth:ro
+    ports: ['127.0.0.1:${ACE_CONSOLE_PORT:-8782}:8782']
+networks:
+  roles: {internal: true}
+  frontend: {}
+  integration: {internal: true}
+  targets: {}
+volumes:
+  actor-key: {}
+  owner-key: {}
+  authority-key: {}
+  verifier-key: {}
+  broker-key: {}
+  operator: {}
+  actor-auth: {}
+  owner-auth: {}
+  authority-auth: {}
+  verifier-auth: {}
+  broker-auth: {}
+  custody-auth: {}
+  custody-data: {}
+  broker-intents: {}
+  gateway-data: {}
+  gateway-auth: {}

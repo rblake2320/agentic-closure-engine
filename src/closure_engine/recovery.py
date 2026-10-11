@@ -35,6 +35,21 @@ def recovery_status(parent, child_frozen, child_packet, trust, now, deadline_ms,
         not parent_invariants <= child_invariants
     ):
         raise ClosureError("RECOVERY_COVERAGE_MISMATCH")
+    children = {ch["id"]: ch for ch in c["checks"]}
+    if any(
+        canonical_check != children[canonical_check["id"]]
+        for canonical_check in parent_contract["checks"]
+        if canonical_check["id"] in parent_invariants
+    ):
+        raise ClosureError("RECOVERY_COVERAGE_MISMATCH")
+    stronger_min = ("duration_ms", "min_samples")
+    stronger_max = ("max_gap_ms", "max_age_ms", "max_clock_skew_ms")
+    if (
+        any(c["window"][key] < parent_contract["window"][key] for key in stronger_min)
+        or (any(c["window"][key] > parent_contract["window"][key] for key in stronger_max))
+        or c["evaluator_hash"] != parent_contract["evaluator_hash"]
+    ):
+        raise ClosureError("RECOVERY_COVERAGE_MISMATCH")
     if result["artifact_hash"] != p["baseline_hash"]:
         return {"state": "RECOVERY_FAILED", "reason": "BASELINE_NOT_RESTORED"}
     parent_time = milliseconds(p["evaluated_at"])

@@ -264,6 +264,7 @@ def demo(output, scenario="valid"):
         "packet_hash": digest(packet),
         "artifact_hash": artifact_hash,
         "ledger_head": ledger.head,
+        "trust_hash": trust.hash,
         "output": str(root),
         "deployment_evidence": "synthetic",
         "crypto_artifact_and_ledger_io": "real",

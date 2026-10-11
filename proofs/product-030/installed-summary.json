@@ -1,0 +1,11 @@
+{
+  "source_receipt_sha256": "af7805ade89d407cf2ced89f7ed3ec0e43cc16e7d08437629b1f50454495e315",
+  "source_receipt": "evidence-runs/product-release-030-final/receipt.json",
+  "wheel": "agentic_closure_engine-0.3.0-py3-none-any.whl",
+  "wheel_sha256": "1f7e7218ab5f5270df5f7fb681e82aa9e3b7ce342fa91a521e1cc0cd6a11d863",
+  "installed_tests": 276,
+  "failures": 0,
+  "legacy_synthetic_cli_controls": 11,
+  "additional_real_powershell_checks": 6,
+  "scope": "Installed ACE kernel and shipped runtime suite: real cryptography, filesystem, ledger, HTTP target, authenticated services and subprocess checks"
+}

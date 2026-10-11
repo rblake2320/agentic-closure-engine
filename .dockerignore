@@ -1,0 +1,15 @@
+.git
+.venv
+evidence-runs
+proofs
+dist
+build
+**/__pycache__
+.runtime
+.backups
+.backup-keys
+.recovered
+.env
+*.token
+*.key
+*.sqlite*

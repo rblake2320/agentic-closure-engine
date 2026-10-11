@@ -24,6 +24,8 @@ def test_installed_cli_demo_and_independent_replay(tmp_path):
         output / "run.json",
         "--trust",
         output / "trust.json",
+        "--expected-trust-hash",
+        result["trust_hash"],
         "--store",
         output / "evidence",
         "--at",
@@ -38,13 +40,15 @@ def test_installed_cli_demo_and_independent_replay(tmp_path):
         output / "ledger.sqlite",
         "--trust",
         output / "trust.json",
+        "--expected-trust-hash",
+        result["trust_hash"],
         "--store",
         output / "evidence",
         "--checkpoint",
         output / "checkpoint.json",
     )
     assert checkpoint.returncode == 0, checkpoint.stderr
-    assert json.loads(checkpoint.stdout)["state"] == "ACCEPTED"
+    assert json.loads(checkpoint.stdout)["transactions"] == {"fixture-transaction": "ACCEPTED"}
     assert not list(output.rglob("*.key")) and not list(output.rglob("*.pem"))
 
 
@@ -71,6 +75,8 @@ def test_cli_failed_invariant_cannot_require_proven(tmp_path):
         output / "run.json",
         "--trust",
         output / "trust.json",
+        "--expected-trust-hash",
+        result["trust_hash"],
         "--store",
         output / "evidence",
         "--at",

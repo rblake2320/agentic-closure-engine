@@ -48,7 +48,7 @@ agentic-closure-engine/
       ed25519.py
       local_ledger.py
       evidence_store.py
-      trusted_clock.py
+      trusted_clock.py     # planned production adapter; not a Phase 0 implemented module
     cli.py
   tests/
     unit/

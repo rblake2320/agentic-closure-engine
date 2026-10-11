@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 
 from .contracts import freeze
 from .crypto import sign, verify
-from .protocol import POLICY_HASH, ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
+from .protocol import POLICY_V3, ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,8 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
                 raise ClosureError("FUTURE_EVIDENCE")
             if age > c["window"]["max_age_ms"]:
                 raise ClosureError("STALE_EVIDENCE")
+            if milliseconds(body["recorded_at"]) < milliseconds(binding["payload"]["created_at"]) - skew:
+                raise ClosureError("PRE_BINDING_EVIDENCE")
             receipt_states.add(body["status"])
             receipt_hashes.add(h)
             receipt_ids[body["receipt_id"]] = h
@@ -131,7 +133,7 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
                 raise ClosureError("OBSERVER_NOT_AUTHORIZED")
             if body["evaluator_hash"] != c["evaluator_hash"]:
                 raise ClosureError("EVALUATOR_MISMATCH")
-            if body["policy_hash"] != POLICY_HASH:
+            if body["policy_hash"] != c["policy_hash"]:
                 raise ClosureError("POLICY_MISMATCH")
             challenge = challenges.get(body["nonce"])
             if (
@@ -204,6 +206,8 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
             outcomes[key] = next(iter(results)) if passed else "UNKNOWN"
         else:
             outcomes[key] = next(iter(results))
+    if c["policy_hash"] == POLICY_V3:
+        _qualify_primary_non_completion(checks, outcomes, receipt_state)
     required = [outcomes[k] for k, ch in checks.items() if ch["mandatory"]]
     reason_codes = []
     if known_failure or tamper:
@@ -234,6 +238,28 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
     )
 
 
+def _qualify_primary_non_completion(checks, outcomes, receipt_state):
+    """Policy v3: a primary NOT_COMPLETED stands only for a confirmed, consistent non-deployment.
+
+    It requires the frozen opt-in (admission already rejects it otherwise), an authenticated
+    NOT_DEPLOYED receipt with no conflicting receipt, every deployment check NOT_COMPLETED, and
+    every baseline check PASS (independent read-back of the unchanged baseline). Anything else
+    is unresolved evidence. Qualified FAILs were already decided above and still win.
+    """
+    deployment = [outcomes[k] for k, ch in checks.items() if ch["kind"] == "deployment"]
+    baseline = [outcomes[k] for k, ch in checks.items() if ch["kind"] == "baseline"]
+    confirmed = (
+        receipt_state == "NOT_DEPLOYED"
+        and deployment
+        and all(o == "NOT_COMPLETED" for o in deployment)
+        and baseline
+        and all(o == "PASS" for o in baseline)
+    )
+    for key, check in checks.items():
+        if check["kind"] == "primary" and outcomes[key] == "NOT_COMPLETED" and not confirmed:
+            outcomes[key] = "UNKNOWN"
+
+
 def _packet_body(*, ledger_head, **args):
     result = evaluate(**args)
     c = args["frozen"].data
@@ -255,7 +281,7 @@ def _packet_body(*, ledger_head, **args):
         "baseline_hash": c["baseline_hash"],
         "target_id": c["target_id"],
         "evaluator_hash": c["evaluator_hash"],
-        "policy_hash": POLICY_HASH,
+        "policy_hash": c["policy_hash"],
         "trust_hash": args["trust"].hash,
         "binding_hash": digest(args["binding"]),
         "inputs_hash": digest(manifest),
@@ -289,6 +315,11 @@ def replay_packet(packet, store, trust):
     ):
         raise ClosureError("PACKET_INPUTS_INVALID")
     frozen = freeze(manifest["contract"], manifest["approval"], trust)
+    if any(
+        not isinstance(manifest[field], list) or len(manifest[field]) > 4096
+        for field in ("records", "receipts")
+    ):
+        raise ClosureError("PACKET_INPUTS_INVALID")
     expected, _ = _packet_body(
         ledger_head=p["ledger_head"],
         frozen=frozen,

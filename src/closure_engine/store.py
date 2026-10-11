@@ -8,9 +8,13 @@ from .protocol import MAX_BYTES, ClosureError, digest
 
 
 class EvidenceStore:
-    def __init__(self, root):
+    def __init__(self, root, *, create=True):
         self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        if create:
+            self.root.mkdir(parents=True, exist_ok=True)
+        elif not self.root.is_dir():
+            # Verification reads existing custody; a mistyped path must not become an empty store.
+            raise ClosureError("EVIDENCE_STORE_MISSING", str(self.root))
 
     def path_for(self, evidence_hash):
         if (

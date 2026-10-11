@@ -113,7 +113,7 @@ class Ledger:
             contracts[tx] = frozen
         return contracts
 
-    def _apply(self, envelope, states, packets, bindings, contracts):
+    def _apply(self, envelope, states, packets, bindings, contracts, input_sets):
         b = verify(envelope, "ledger-event", self.trust)
         tx = b["transaction_id"]
         if tx not in contracts or b["contract_hash"] != contracts[tx].hash:
@@ -126,13 +126,28 @@ class Ledger:
             raise ClosureError("STATE_AUTHORITY_DENIED")
         if state in NORMAL and old != NORMAL[state]:
             raise ClosureError("ILLEGAL_TRANSITION")
+        if state in VERDICTS or state == "OBSERVING":
+            if b["packet"] is None:
+                raise ClosureError("CLOSURE_PACKET_REQUIRED")
+            p = replay_packet(b["packet"], self.store, self.trust)
+            if tx in bindings and p["binding_hash"] != digest(bindings[tx]):
+                raise ClosureError("VERDICT_ARTIFACT_BINDING_MISMATCH")
+            manifest = strict_loads(self.store.get(p["inputs_hash"]))
+            current = {digest(value) for value in manifest["records"] + manifest["receipts"]}
+            prior = input_sets.get(tx, {"records": set(), "evaluated_at": -1})
+            if not prior["records"] <= current:
+                raise ClosureError("LEDGERED_EVIDENCE_OMITTED")
+            evaluated_at = milliseconds(p["evaluated_at"])
+            if evaluated_at < prior["evaluated_at"]:
+                raise ClosureError("EVALUATION_TIME_REGRESSION")
+            input_sets[tx] = {"records": current, "evaluated_at": evaluated_at}
         if state in VERDICTS:
             if old not in ACTIVE or tx in packets:
                 raise ClosureError("VERDICT_ALREADY_FINAL_OR_ILLEGAL")
             packet = b["packet"]
             if packet is None:
                 raise ClosureError("CLOSURE_PACKET_REQUIRED")
-            p = replay_packet(packet, self.store, self.trust)
+            # The common packet boundary above already reconstructed this body.
             if (
                 p["verdict"] != state
                 or p["contract_hash"] != frozen.hash
@@ -222,7 +237,7 @@ class Ledger:
         if state == "OBSERVING":
             if b["packet"] is None:
                 raise ClosureError("IMMEDIATE_VERIFICATION_REQUIRED")
-            p = replay_packet(b["packet"], self.store, self.trust)
+            # Reuse the common-boundary replay; no evaluator inputs changed.
             if p["contract_hash"] != frozen.hash or p["ledger_head"] != b["previous_hash"]:
                 raise ClosureError("IMMEDIATE_PACKET_MISMATCH")
             if any(
@@ -236,7 +251,6 @@ class Ledger:
                 if b["recovery_contract"] is None or b["recovery_approval"] is None:
                     raise ClosureError("RECOVERY_CONTRACT_REQUIRED")
                 child = freeze(b["recovery_contract"], b["recovery_approval"], self.trust)
-                replay_packet(b["packet"], self.store, self.trust)
             else:
                 child = None
             status = recovery_status(
@@ -254,19 +268,22 @@ class Ledger:
             self.store.get(ref)
         states[tx] = state
 
-    def _verify(self, db, checkpoint=None):
+    def _verify(self, db, checkpoint=None, additional_checkpoints=()):
         stored_trust = db.execute("SELECT value FROM meta WHERE key='trust_hash'").fetchone()
         if stored_trust is None or stored_trust[0] != self.trust.hash:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
         contracts = self._contracts(db)
-        states, packets, bindings, history = {}, {}, {}, {}
-        head, seq = GENESIS, 0
+        states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
+        head, seq, last_event_time = GENESIS, 0, None
         for row_seq, event_id, raw, stored_hash in db.execute(
             "SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence"
         ):
             envelope = strict_loads(raw)
             b = verify(envelope, "ledger-event", self.trust)
+            event_time = milliseconds(envelope["payload"]["created_at"])
+            if last_event_time is not None and event_time < last_event_time:
+                raise ClosureError("EVENT_TIME_REGRESSION")
             if (
                 row_seq != seq + 1
                 or b["sequence"] != row_seq
@@ -276,15 +293,65 @@ class Ledger:
                 or canonical(envelope) != raw
             ):
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
-            self._apply(envelope, states, packets, bindings, contracts)
+            self._apply(envelope, states, packets, bindings, contracts, input_sets)
             head, seq = stored_hash, row_seq
+            last_event_time = event_time
             history[seq] = head
-        if checkpoint is not None:
-            cp = verify(checkpoint, "checkpoint", self.trust)
+        for anchor in (*additional_checkpoints, *((checkpoint,) if checkpoint is not None else ())):
+            cp = verify(anchor, "checkpoint", self.trust)
             checkpoint_head = GENESIS if cp["sequence"] == 0 else history.get(cp["sequence"])
             if cp["trust_hash"] != self.trust.hash or checkpoint_head != cp["head_hash"]:
                 raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
-        return head, seq, states, packets, bindings, contracts
+        return head, seq, states, packets, bindings, contracts, input_sets, last_event_time
+
+    def import_history(self, contracts, events, checkpoint, *, prior_checkpoint=None):
+        """Atomically reconstruct an EMPTY verifier ledger and validate its entire history once.
+
+        The same replay path used by append checks signatures, chronology, every transition,
+        packet input completeness, and deterministic verdicts. No history is committed until
+        both the exact terminal checkpoint and any prior external anchor have passed.
+        This verifier-only bulk operation is not exposed by custody or actor services.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if (
+                db.execute("SELECT 1 FROM events LIMIT 1").fetchone()
+                or db.execute("SELECT 1 FROM contracts LIMIT 1").fetchone()
+            ):
+                raise ClosureError("IMPORT_TARGET_NOT_EMPTY")
+            for contract in contracts:
+                frozen = freeze(contract.data, contract.approval, self.trust)
+                db.execute(
+                    "INSERT INTO contracts VALUES (?,?,?)",
+                    (
+                        frozen.data["transaction_id"],
+                        frozen.raw,
+                        frozen.approval_raw,
+                    ),
+                )
+            for envelope in events:
+                body = verify(envelope, "ledger-event", self.trust)
+                db.execute(
+                    "INSERT INTO events VALUES (?,?,?,?)",
+                    (
+                        body["sequence"],
+                        body["event_id"],
+                        canonical(envelope),
+                        digest(envelope),
+                    ),
+                )
+            result = self._verify(db, checkpoint, () if prior_checkpoint is None else (prior_checkpoint,))
+            anchor = verify(checkpoint, "checkpoint", self.trust)
+            if anchor["sequence"] != result[1] or anchor["head_hash"] != result[0]:
+                raise ClosureError("CHECKPOINT_DOES_NOT_MATCH_EXPORT")
+            db.execute("COMMIT")
+        self.anchor = checkpoint
+        return {
+            "verified_head": result[0],
+            "sequence": result[1],
+            "transactions": dict(result[2]),
+            "packets": dict(result[3]),
+        }
 
     def verify(self, checkpoint=None):
         with self._db() as db:
@@ -298,6 +365,72 @@ class Ledger:
     def sequence(self):
         with self._db() as db:
             return self._verify(db)[1]
+
+    @property
+    def position(self):
+        """Read a verified head/sequence pair in one storage snapshot."""
+        with self._db() as db:
+            result = self._verify(db)
+            return result[0], result[1]
+
+    @property
+    def last_event_time(self):
+        with self._db() as db:
+            return self._verify(db)[7]
+
+    def audit_export(self, from_sequence=1, limit=1000):
+        """Registered contracts and a bounded page of signed events from one verified snapshot.
+
+        Everything returned is public, signed material; an independent party rebuilds the
+        ledger with ``register`` and ``append`` and checks a custodian checkpoint against it.
+        """
+        if (
+            type(from_sequence) is not int
+            or from_sequence < 1
+            or type(limit) is not int
+            or not 1 <= limit <= 5000
+        ):
+            raise ClosureError("INVALID_EXPORT_RANGE")
+        with self._db() as db:
+            head, sequence = self._verify(db)[:2]
+            contracts = [
+                {"contract": strict_loads(raw), "approval": strict_loads(approval)}
+                for raw, approval in db.execute(
+                    "SELECT contract,approval FROM contracts ORDER BY transaction_id"
+                )
+            ]
+            events = [
+                strict_loads(raw)
+                for (raw,) in db.execute(
+                    "SELECT envelope FROM events WHERE sequence>=? ORDER BY sequence LIMIT ?",
+                    (from_sequence, limit),
+                )
+            ]
+        last = from_sequence + len(events) - 1
+        return {
+            "head": head,
+            "sequence": sequence,
+            "contracts": contracts,
+            "events": events,
+            "next_sequence": last + 1 if last < sequence else None,
+        }
+
+    def snapshot(self):
+        """Head, sequence, every state and every technical packet from one verified read."""
+        with self._db() as db:
+            head, sequence, states, packets = self._verify(db)[:4]
+        return {"head": head, "sequence": sequence, "transactions": dict(states), "packets": dict(packets)}
+
+    def technical_packets(self):
+        """Every admitted technical packet keyed by transaction, from one verified snapshot."""
+        with self._db() as db:
+            return dict(self._verify(db)[3])
+
+    def summary(self, checkpoint=None):
+        """Verified head, sequence and every transaction state from one storage snapshot."""
+        with self._db() as db:
+            result = self._verify(db, checkpoint)
+        return {"verified_head": result[0], "sequence": result[1], "transactions": dict(result[2])}
 
     def state(self, transaction_id):
         with self._db() as db:
@@ -314,7 +447,7 @@ class Ledger:
         h = digest(raw)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
-            head, seq, states, packets, bindings, contracts = self._verify(db)
+            head, seq, states, packets, bindings, contracts, input_sets, last_event_time = self._verify(db)
             existing = db.execute(
                 "SELECT envelope,event_hash FROM events WHERE event_id=?", (b["event_id"],)
             ).fetchone()
@@ -325,7 +458,12 @@ class Ledger:
                 return existing[1]
             if head != expected_head or b["previous_hash"] != head or b["sequence"] != seq + 1:
                 raise ClosureError("STALE_LEDGER_HEAD")
-            self._apply(envelope, states, packets, bindings, contracts)
+            if (
+                last_event_time is not None
+                and milliseconds(envelope["payload"]["created_at"]) < last_event_time
+            ):
+                raise ClosureError("EVENT_TIME_REGRESSION")
+            self._apply(envelope, states, packets, bindings, contracts, input_sets)
             db.execute("INSERT INTO events VALUES (?,?,?,?)", (seq + 1, b["event_id"], raw, h))
             db.execute("COMMIT")
         return h

@@ -3,7 +3,16 @@
 from dataclasses import dataclass
 
 from .crypto import verify
-from .protocol import POLICY_HASH, ClosureError, canonical, digest, milliseconds, strict_loads, validate
+from .protocol import (
+    ACCEPTED_POLICIES,
+    PARTIAL_KINDS,
+    ClosureError,
+    canonical,
+    digest,
+    milliseconds,
+    strict_loads,
+    validate,
+)
 
 
 @dataclass(frozen=True)
@@ -27,10 +36,11 @@ class FrozenContract:
 def freeze(contract, approval, trust):
     validate("closure-contract", contract)
     proof = verify(approval, "approval", trust)
-    if proof != {"contract_hash": digest(contract), "trust_hash": trust.hash, "policy_hash": POLICY_HASH}:
-        raise ClosureError("APPROVAL_MISMATCH")
-    if contract["trust_hash"] != trust.hash or contract["policy_hash"] != POLICY_HASH:
+    policy = contract["policy_hash"]
+    if contract["trust_hash"] != trust.hash or policy not in ACCEPTED_POLICIES:
         raise ClosureError("POLICY_OR_TRUST_MISMATCH")
+    if proof != {"contract_hash": digest(contract), "trust_hash": trust.hash, "policy_hash": policy}:
+        raise ClosureError("APPROVAL_MISMATCH")
     ids = [c["id"] for c in contract["checks"]]
     if len(set(ids)) != len(ids):
         raise ClosureError("DUPLICATE_CHECK")
@@ -47,7 +57,7 @@ def freeze(contract, approval, trust):
         raise ClosureError("INCOMPLETE_ACCEPTANCE_CONTRACT")
     if sum(c["kind"] == "invariant" for c in mandatory) < 2:
         raise ClosureError("INSUFFICIENT_INVARIANTS")
-    if any(c["allow_not_completed"] and c["kind"] not in {"deployment", "stage"} for c in contract["checks"]):
+    if any(c["allow_not_completed"] and c["kind"] not in PARTIAL_KINDS[policy] for c in contract["checks"]):
         raise ClosureError("INVALID_PARTIAL_POLICY")
     window = contract["window"]
     if window["max_age_ms"] < window["duration_ms"] or (

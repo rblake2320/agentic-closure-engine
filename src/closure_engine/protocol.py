@@ -1,5 +1,6 @@
 """Bounded protocol parsing, canonical bytes and time primitives."""
 
+import functools
 import hashlib
 import json
 import re
@@ -11,7 +12,20 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 MAX_BYTES = 1_048_576
 MAX_DEPTH = 24
-POLICY_HASH = "sha256:" + hashlib.sha256(b"ACE/v1/20261011/mandatory-fail-first+packet-replay-v2").hexdigest()
+# Acceptance policies. A contract freezes one of these; its packets are evaluated and replayed
+# under that policy forever. New approvals use POLICY_HASH (the current policy).
+#   v2: mandatory-fail-first, packet replay; only deployment/stage may be NOT_COMPLETED.
+#   v3: v2 plus opt-in confirmed primary non-completion (see verdicts.evaluate).
+POLICY_V2 = "sha256:" + hashlib.sha256(b"ACE/v1/20261011/mandatory-fail-first+packet-replay-v2").hexdigest()
+POLICY_V3 = (
+    "sha256:"
+    + hashlib.sha256(
+        b"ACE/v1/20261011/mandatory-fail-first+packet-replay+opt-in-primary-non-completion-v3"
+    ).hexdigest()
+)
+POLICY_HASH = POLICY_V3
+ACCEPTED_POLICIES = {POLICY_V2: "v2", POLICY_V3: "v3"}
+PARTIAL_KINDS = {POLICY_V2: {"deployment", "stage"}, POLICY_V3: {"deployment", "stage", "primary"}}
 GENESIS = "sha256:" + hashlib.sha256(b"ACE/v1/genesis").hexdigest()
 DATE_CHECKER = FormatChecker()
 
@@ -101,13 +115,19 @@ def strict_loads(raw):
         raise ClosureError("INVALID_JSON") from exc
 
 
-def validate(name, value):
-    canonical(value)
+@functools.lru_cache(maxsize=None)
+def _validator(name):
+    # Packaged schemas are immutable for the life of the process; compile each once.
     try:
         schema = strict_loads(files("closure_engine").joinpath("schemas", "v1", name + ".json").read_bytes())
     except FileNotFoundError as exc:
         raise ClosureError("UNKNOWN_SCHEMA") from exc
-    errors = list(Draft202012Validator(schema, format_checker=DATE_CHECKER).iter_errors(value))
+    return Draft202012Validator(schema, format_checker=DATE_CHECKER)
+
+
+def validate(name, value):
+    canonical(value)
+    errors = list(_validator(name).iter_errors(value))
     if errors:
         raise ClosureError("SCHEMA_INVALID", str(errors[0].message)[:240])
     return value

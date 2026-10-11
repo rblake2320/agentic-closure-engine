@@ -7,7 +7,12 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-runtime/
+/runtime/
+.runtime/
+.backups/
+.backup-keys/
+.recovered/
+*.token
 private/
 evidence-runs/
 .env
