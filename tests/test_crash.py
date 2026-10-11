@@ -1,14 +1,17 @@
+import sqlite3
 import subprocess
 import sys
 import time
 
+import pytest
 from test_ledger import begin, event, packet
 
 from closure_engine.ledger import Ledger
 from closure_engine.protocol import canonical
 
 
-def test_real_process_death_during_uncommitted_receipt(run, tmp_path):
+@pytest.mark.parametrize("iteration", range(3))
+def test_real_process_death_during_uncommitted_receipt(run, tmp_path, iteration):
     ledger = begin(run, tmp_path)
     cp = ledger.checkpoint(run["keys"]["custodian"], run["binding"]["payload"]["created_at"])
     before = ledger.head
@@ -48,6 +51,12 @@ def test_real_process_death_during_uncommitted_receipt(run, tmp_path):
     reopened.append(event(run, reopened, "INDETERMINATE", packet=result), reopened.head)
     reopened.append(event(run, reopened, "RECOVERY_REQUIRED"), reopened.head)
     assert reopened.state("transaction-1") == "RECOVERY_REQUIRED"
+
+
+def test_single_writer_ledger_avoids_shared_memory_journal(run, tmp_path):
+    ledger = begin(run, tmp_path)
+    with sqlite3.connect(ledger.path) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
 
 
 def test_commit_then_lost_reply_is_idempotent_after_reopen(run, tmp_path):

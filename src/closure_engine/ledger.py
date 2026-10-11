@@ -55,7 +55,10 @@ class Ledger:
 
     def _initialize(self):
         with self._db() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            # The bounded single-writer kernel does not need WAL shared-memory files.
+            # Rollback journaling avoids the observed Windows crash/reopen WAL boundary.
+            if db.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+                raise ClosureError("UNSUPPORTED_JOURNAL_MODE")
             db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS contracts "
@@ -74,13 +77,15 @@ class Ledger:
     def _db(self):
         try:
             db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-            db.execute("PRAGMA synchronous=FULL")
             try:
+                db.execute("PRAGMA synchronous=FULL")
                 yield db
             finally:
                 db.close()
         except sqlite3.Error as exc:
-            raise ClosureError("LEDGER_STORAGE_ERROR", str(exc)) from exc
+            name = getattr(exc, "sqlite_errorname", "UNKNOWN")
+            code = getattr(exc, "sqlite_errorcode", "UNKNOWN")
+            raise ClosureError("LEDGER_STORAGE_ERROR", f"{name}/{code}: {exc}") from exc
 
     def register(self, frozen):
         freeze(frozen.data, frozen.approval, self.trust)

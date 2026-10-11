@@ -62,3 +62,5 @@ Content-addressed evidence objects use atomic non-replacing creation, fsync and 
 The implemented baseline obligation reads and hashes the retained baseline artifact. BASELINED lifecycle events additionally require a complete protected-resource manifest and all referenced bytes. Recovery approval and its observation window must follow the parent's verdict; old observations cannot satisfy restoration.
 
 The public CLI accepts offline-fixture bundles only. Evaluation time and enrollment are explicit operator inputs; this is not an authenticated multi-user runtime service and it performs no production operations.
+
+New ledgers use SQLite DELETE rollback journaling with synchronous=FULL for the bounded single-writer deployment. The initial WAL configuration produced one Windows/Python 3.13 crash-reopen I/O failure, followed by a passing rerun. That dependency/OS interaction is contained by avoiding shared-memory WAL in new stores; its exact underlying cause is not asserted. No existing database is silently migrated or repaired. Crash tests execute three independent killed-writer runs per environment.

@@ -1,12 +1,12 @@
 # Phase 0 observed validation
 
-Worked on 2026-10-11: the installed Python 3.12.10 wheel passed 75 tests, zero failures, plus eleven CLI scenarios with independent replay and checkpoint verification. Imports resolved to the new environment's site-packages rather than src. The source was formatted and Ruff checks passed.
+Worked on 2026-10-11: the final installed Python 3.12.10 wheel passed 78 tests, zero failures, plus eleven CLI scenarios with independent replay and checkpoint verification. Imports resolved to the new environment's site-packages rather than src. The source was formatted and Ruff checks passed.
 
-Final local retained receipt: `evidence-runs/release-312/receipt.json`. A copy is committed at [proofs/windows-python312/receipt.json](../proofs/windows-python312/receipt.json).
+Final local retained receipt: `evidence-runs/release-journal-312/receipt.json`. A copy is committed at [proofs/windows-python312/receipt.json](../proofs/windows-python312/receipt.json).
 
 Wheel: `agentic_closure_engine-0.1.0-py3-none-any.whl`.
 
-SHA-256: `cdb44a727e095f61cde9b75afb9a76f861d8fd6d54d9b3000c92f0fe88f12d34`.
+SHA-256: `58cd1d10fed0f97b5ba53adc9a5caaf3c162740c1d41fec07786bcb0b8612f07`.
 
 The receipt contains per-command durations/exit codes, installed origin, scenario outcomes, signed packet hashes and ledger heads. JUnit is retained beside it; public signed parent/recovery packets are retained in the installed suite's owned pytest temporary directory. The dependency inventory includes the build/verification environment, not only runtime dependencies.
 
@@ -38,6 +38,8 @@ Deployment/behavior records are explicit fixtures. Crypto, baseline/candidate fi
 - Recovery could use an observation window preceding the parent's verdict. Recovery now checks approval/window ordering, baseline restoration and current-state preconditions.
 
 Each repair has a named regression in the committed suite and retained red/green logs under evidence-runs. Real forced subprocess death during an uncommitted receipt left the durable EXECUTING state intact; restarted evaluation produced INDETERMINATE and RECOVERY_REQUIRED. A committed event with a lost reply was safely accepted once on retry.
+
+The first CI run had one Windows/Python 3.13.15 WAL crash-reopen disk-I/O failure while the other three jobs passed. The next run passed all four, demonstrating an intermittent boundary rather than a proven repair. The new bounded single-writer store uses DELETE rollback journaling with FULL synchronization, closes connections even if initialization fails, and retains SQLite extended error names/codes. This contains the WAL/shared-memory path; the underlying dependency/OS cause is unclassified. Three independent killed-writer checks per environment and an explicit journal-mode regression guard the chosen storage behavior. Local Python 3.12.10 and 3.13.5 targeted controls passed; the final installed 3.12 suite passed all 78 checks.
 
 ## Scope
 
