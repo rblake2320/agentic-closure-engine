@@ -1,6 +1,6 @@
 # Planned acceptance and adversarial matrix
 
-Status: every executable test below is PLANNED / NOT RUN. The current repository is a design package, not a tested kernel.
+Status: the offline matrix is implemented in tests/test_protocol.py, test_verdicts.py, test_ledger.py, test_recovery.py, test_recovery_ledger.py, test_hardening.py, test_crash.py and test_cli.py. Installed-package results are recorded in VALIDATION.md after execution. OS/target isolation remains the separate Phase 1 gate.
 
 Use one bounded contract with a primary check and at least two mandatory invariants. Capture expected outcomes before implementation. Every negative case has an equivalent valid control. A suite that rejects all inputs fails acceptance.
 

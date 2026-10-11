@@ -1,0 +1,46 @@
+# Phase 0 observed validation
+
+Worked on 2026-10-11: the installed Python 3.12.10 wheel passed 75 tests, zero failures, plus eleven CLI scenarios with independent replay and checkpoint verification. Imports resolved to the new environment's site-packages rather than src. The source was formatted and Ruff checks passed.
+
+Final local retained receipt: `evidence-runs/release-312/receipt.json`. A copy is committed at [proofs/windows-python312/receipt.json](../proofs/windows-python312/receipt.json).
+
+Wheel: `agentic_closure_engine-0.1.0-py3-none-any.whl`.
+
+SHA-256: `cdb44a727e095f61cde9b75afb9a76f861d8fd6d54d9b3000c92f0fe88f12d34`.
+
+The receipt contains per-command durations/exit codes, installed origin, scenario outcomes, signed packet hashes and ledger heads. JUnit is retained beside it; public signed parent/recovery packets are retained in the installed suite's owned pytest temporary directory. The dependency inventory includes the build/verification environment, not only runtime dependencies.
+
+## Scenario outcomes
+
+| Scenario | Observed kernel verdict |
+| --- | --- |
+| Valid control | PROVEN |
+| Mandatory invariant failure | DISPROVEN |
+| Qualified evaluator-tamper finding | DISPROVEN |
+| Previous artifact | INDETERMINATE |
+| Missing deployment receipt | INDETERMINATE |
+| Confirmed non-deployment with verified patch | PARTIALLY_PROVEN |
+| Unreachable target observation | INDETERMINATE |
+| Invalid observation signature | INDETERMINATE |
+| Unknown interrupted action | INDETERMINATE, recovery required |
+| Stale observations | INDETERMINATE |
+| Exact replay retry | PROVEN without duplicate counting |
+
+Deployment/behavior records are explicit fixtures. Crypto, baseline/candidate file reads, content-addressed evidence, SQLite history, concurrency and process interruption are real operations against owned local test data. No external model calls or mock cryptographic primitives were used.
+
+## Failures caught and repaired
+
+- Conflicting signed observations could previously retain a successful first sample. Their check now becomes unresolved; exact retries remain idempotent.
+- A baseline existed in the contract but was not a required observation. Freeze now requires an independent baseline obligation and admission checks the retained artifact bytes.
+- Different signed receipt bodies could reuse one ID with the same status. This now makes execution evidence unresolved.
+- JSON Schema's optional date-time checker did not reject an impossible date in this environment. A strict UTC date parser is now registered explicitly.
+- Reopened histories could be read without an independent checkpoint. Reopening now requires one, and checkpoint/trust bindings are checked on subsequent operations.
+- Recovery could use an observation window preceding the parent's verdict. Recovery now checks approval/window ordering, baseline restoration and current-state preconditions.
+
+Each repair has a named regression in the committed suite and retained red/green logs under evidence-runs. Real forced subprocess death during an uncommitted receipt left the durable EXECUTING state intact; restarted evaluation produced INDETERMINATE and RECOVERY_REQUIRED. A committed event with a lost reply was safely accepted once on retry.
+
+## Scope
+
+This is acceptance of the offline Phase 0 kernel. Real deployment, OS identity/resource/key access denial, a live durability window and actual target rollback are Phase 1 gates. The current CLI rejects non-fixture runtime modes. Laya is deliberately absent; no measured model benefit is claimed.
+
+GitHub CI runs the installed-package verification on Windows/Linux with Python 3.12/3.13. Its observed status is tracked in Jira KAN-129; do not infer remote success from this local receipt.

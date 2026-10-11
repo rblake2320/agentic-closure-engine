@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:trust-snapshot",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": "v1"
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+          },
+          "issuer": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "actor",
+              "broker",
+              "verifier",
+              "authority",
+              "custodian"
+            ]
+          },
+          "public_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "minItems": 0,
+            "maxItems": 256
+          }
+        },
+        "required": [
+          "key_id",
+          "issuer",
+          "role",
+          "public_key",
+          "checks"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 64
+    }
+  },
+  "required": [
+    "version",
+    "keys"
+  ],
+  "additionalProperties": false
+}

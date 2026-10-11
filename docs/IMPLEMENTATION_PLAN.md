@@ -1,6 +1,6 @@
 # Phase 0 implementation plan
 
-Status: proposed, awaiting owner review. All milestones below are future work.
+Status: owner approved design commit 7e7a503 on 2026-10-11; M1-M5 implementation is authorized. See APPROVAL.md. Milestones are acceptance gates; observed results are recorded separately.
 
 ## Scope and architecture
 
@@ -12,7 +12,7 @@ Version one has one repository, bounded patch, deployment target, verifier path 
 
 ## Proposed repository tree
 
-Only README, AGENTS, .gitignore, .gitattributes and the five design documents exist now. The rest of this tree is proposed, not implemented.
+The original proposed tree is retained below as a design reference. Implementation uses a smaller flat Python package: protocol.py, crypto.py, contracts.py, store.py, verdicts.py, ledger.py, recovery.py, demo.py and cli.py. Committed schemas live under src/closure_engine/schemas/v1; tools/build_schemas.py regenerates them. Tests cover the same domain boundaries without unnecessary package nesting. The demo is an explicit offline fixture; deployment/identity adapters remain future work.
 
 ```text
 agentic-closure-engine/

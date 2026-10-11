@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:recovery-contract",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": "v1"
+    },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "transaction_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+    },
+    "repo_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+    },
+    "baseline_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "allowed_changes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "protected_resources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "minItems": 2,
+      "maxItems": 32
+    },
+    "allowed_actions": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "deploy"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "evaluator_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "trust_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "deadline_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+          },
+          "kind": {
+            "enum": [
+              "primary",
+              "invariant",
+              "deployment",
+              "stage",
+              "baseline"
+            ]
+          },
+          "mandatory": {
+            "type": "boolean"
+          },
+          "phase": {
+            "enum": [
+              "instant",
+              "window"
+            ]
+          },
+          "observers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "allow_not_completed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "mandatory",
+          "phase",
+          "observers",
+          "allow_not_completed"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 5,
+      "maxItems": 32
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "max_gap_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_samples": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 256
+        },
+        "max_age_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_clock_skew_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "duration_ms",
+        "max_gap_ms",
+        "min_samples",
+        "max_age_ms",
+        "max_clock_skew_ms"
+      ],
+      "additionalProperties": false
+    },
+    "recovery": {
+      "type": "object",
+      "properties": {
+        "mechanism": {
+          "const": "redeploy-baseline"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "mechanism",
+        "deadline_ms"
+      ],
+      "additionalProperties": false
+    },
+    "parent_packet_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "version",
+    "contract_id",
+    "revision",
+    "transaction_id",
+    "attempt_id",
+    "repo_id",
+    "baseline_hash",
+    "target_id",
+    "intent",
+    "allowed_changes",
+    "protected_resources",
+    "allowed_actions",
+    "evaluator_hash",
+    "policy_hash",
+    "trust_hash",
+    "deadline_at",
+    "checks",
+    "window",
+    "recovery",
+    "parent_packet_hash"
+  ],
+  "additionalProperties": false
+}

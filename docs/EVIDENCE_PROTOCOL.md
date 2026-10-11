@@ -1,6 +1,6 @@
 # Contract and evidence protocol v1 proposal
 
-Status: field-level design only. JSON Schema implementations and keys do not exist yet.
+Status: v1 offline protocol implemented in src/closure_engine, with packaged schemas/v1 JSON Schemas. Fixture keys are generated only in memory; production enrollment/key custody is not provisioned.
 
 ## Serialization and signatures
 
@@ -57,4 +57,8 @@ The packet includes contract/approval hashes, artifact/baseline/build/deployment
 
 Event payloads include sequence, previous-event hash, transaction/attempt, caller identity, event type, frozen contract hash and immutable object references. A local SQLite adapter is proposed for atomic append and unique IDs; durable write mode, rollback/truncation detection against independent checkpoints, and startup reconciliation must be tested. Storage API append-only behavior and hash chaining are separate from OS custody guarantees.
 
-Maintain content-addressed evidence objects using atomic creation, fsync and read-back digest verification. Orphan objects can be quarantined; missing objects invalidate the affected obligation. No observation byte edits, silent history repair, duplicate-event counting, or evaluator-selected trust anchors.
+Content-addressed evidence objects use atomic non-replacing creation, fsync and read-back digest verification. Orphan pending files are ignored, not accepted as evidence; missing objects invalidate the affected obligation. No observation byte edits, silent history repair, duplicate-event counting, or evaluator-selected trust anchors.
+
+The implemented baseline obligation reads and hashes the retained baseline artifact. BASELINED lifecycle events additionally require a complete protected-resource manifest and all referenced bytes. Recovery approval and its observation window must follow the parent's verdict; old observations cannot satisfy restoration.
+
+The public CLI accepts offline-fixture bundles only. Evaluation time and enrollment are explicit operator inputs; this is not an authenticated multi-user runtime service and it performs no production operations.

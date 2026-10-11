@@ -1,6 +1,6 @@
 # Trust boundaries and threat model
 
-Status: proposed. This document defines requirements; no OS or credential isolation has been provisioned.
+Status: approved. The offline kernel implements signature purpose, enrolled role and state capabilities. This document also defines Phase 1 operating-identity requirements; no OS or credential isolation has been provisioned.
 
 ## Principals and capabilities
 

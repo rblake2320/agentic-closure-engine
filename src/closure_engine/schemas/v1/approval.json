@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:approval",
+  "type": "object",
+  "properties": {
+    "algorithm": {
+      "const": "Ed25519"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v1"
+        },
+        "purpose": {
+          "const": "approval"
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "contract_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "trust_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "policy_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "contract_hash",
+            "trust_hash",
+            "policy_hash"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "purpose",
+        "issuer",
+        "key_id",
+        "created_at",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "required": [
+    "algorithm",
+    "payload",
+    "signature"
+  ],
+  "additionalProperties": false
+}

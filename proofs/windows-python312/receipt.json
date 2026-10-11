@@ -1,0 +1,287 @@
+{
+  "scope": "Phase 0 offline kernel; synthetic deployment records; real crypto, artifact and ledger I/O; real subprocess interruption",
+  "wheel": "agentic_closure_engine-0.1.0-py3-none-any.whl",
+  "wheel_sha256": "cdb44a727e095f61cde9b75afb9a76f861d8fd6d54d9b3000c92f0fe88f12d34",
+  "installed_origin": {
+    "module": "D:\\projects\\agentic-closure-engine\\evidence-runs\\release-312\\venv\\Lib\\site-packages\\closure_engine\\__init__.py",
+    "python": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]"
+  },
+  "tests": 75,
+  "failures": 0,
+  "scenarios": [
+    {
+      "scenario": "valid",
+      "expected": "PROVEN",
+      "observed": "PROVEN",
+      "packet_hash": "sha256:a1054e0e3ed98713ae1d5b2bc8a99892a2e88bc928461c098aa36133d3bc78b4",
+      "ledger_head": "sha256:f6302fea22eff38f13c4b7e1a9f63e72ddd1b0c9ad75015752d99637c797eb73"
+    },
+    {
+      "scenario": "invariant-failure",
+      "expected": "DISPROVEN",
+      "observed": "DISPROVEN",
+      "packet_hash": "sha256:0acd20b5efc3b33ff0529537887118cca16dbb7e849139398ccc5a08978d5892",
+      "ledger_head": "sha256:88c605fcf30dd3b30750644d0e7c229c13cf540e32cbf737179ef180638cc7d1"
+    },
+    {
+      "scenario": "evaluator-tamper",
+      "expected": "DISPROVEN",
+      "observed": "DISPROVEN",
+      "packet_hash": "sha256:8abd4344f02d8eca1af385e134003d28cd05259ac54e930ae12738a3db269085",
+      "ledger_head": "sha256:80dbcf3bcc97d3b41440f73726e7ccfd76f0f24a36edcf0aaed1c5c263336b84"
+    },
+    {
+      "scenario": "old-artifact",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:1a026f113165049b33b0b8964d5a594b4298ba484ca10b079c01df41160b70a1",
+      "ledger_head": "sha256:70a6840be11a8adde355ed33b00cd4e61f1b6e6ff98a0cdc0cccc0f6ca9960c1"
+    },
+    {
+      "scenario": "missing-deployment",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:8773deea0ad32552934bf8ab37c57e7658f8079715f470ec81f9cefa913d38d9",
+      "ledger_head": "sha256:2df51c3364b799ee039131c6b671eb204392924b3df21cebafe3c5db4dcc703e"
+    },
+    {
+      "scenario": "not-deployed",
+      "expected": "PARTIALLY_PROVEN",
+      "observed": "PARTIALLY_PROVEN",
+      "packet_hash": "sha256:3f8c929646448d188be9d07c9a8850097281147a7d41fc5bac092212e6777c43",
+      "ledger_head": "sha256:879610bb2910160e7cac0d534333d67fe9d7b343165c2f7cad7da1b43899e7de"
+    },
+    {
+      "scenario": "unreachable",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:0db7bd69a45505dc8912d71c60aaef1b10ab5014cff70bbf51f001a9008ee29d",
+      "ledger_head": "sha256:10f656be9bf2f048d04831a65782fc5a96f074190780312766164bad83fb845f"
+    },
+    {
+      "scenario": "signature-failure",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:5e4b8c7f1a37b5d3085bf46ae3e6b0c09abc096ac4a21f240d52b0568eee3d3f",
+      "ledger_head": "sha256:cbd661deb82076083b0df804fb0b0d6e0c7a688a9e198f83a9c85e2b6a88b9a3"
+    },
+    {
+      "scenario": "interrupted",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:93674ef34600a71772b6243bc1fb45f1870ad7af4919a7bdac50c97c9e709ab2",
+      "ledger_head": "sha256:c79782a7ab0b86a60b648b6e646d3791917807f26f73df3fdd26271dc5f5f467"
+    },
+    {
+      "scenario": "stale",
+      "expected": "INDETERMINATE",
+      "observed": "INDETERMINATE",
+      "packet_hash": "sha256:81b2af388d82c76ea679569fefd741241cb9be4a002d8709c94d1dec5040b868",
+      "ledger_head": "sha256:466fdefcc5711f871b97ec5871b319213b956662416cdfa4c08181d5cee5793e"
+    },
+    {
+      "scenario": "replay",
+      "expected": "PROVEN",
+      "observed": "PROVEN",
+      "packet_hash": "sha256:3544e837352f65b3e9faf57bc0fcf93853d777081b1de1183d8f80779b3febb3",
+      "ledger_head": "sha256:82667918098058ffe7fc097b9c8bf69e8d7df5047143a9326f84d953149fe578"
+    }
+  ],
+  "commands": [
+    {
+      "check": "build",
+      "exit_code": 0,
+      "duration_ms": 1250
+    },
+    {
+      "check": "dependencies",
+      "exit_code": 0,
+      "duration_ms": 11750
+    },
+    {
+      "check": "install",
+      "exit_code": 0,
+      "duration_ms": 1234
+    },
+    {
+      "check": "installed-origin",
+      "exit_code": 0,
+      "duration_ms": 46
+    },
+    {
+      "check": "installed-tests",
+      "exit_code": 0,
+      "duration_ms": 27046
+    },
+    {
+      "check": "demo-valid",
+      "exit_code": 0,
+      "duration_ms": 2031
+    },
+    {
+      "check": "replay-valid",
+      "exit_code": 0,
+      "duration_ms": 281
+    },
+    {
+      "check": "ledger-valid",
+      "exit_code": 0,
+      "duration_ms": 436
+    },
+    {
+      "check": "demo-invariant-failure",
+      "exit_code": 0,
+      "duration_ms": 1906
+    },
+    {
+      "check": "replay-invariant-failure",
+      "exit_code": 0,
+      "duration_ms": 235
+    },
+    {
+      "check": "ledger-invariant-failure",
+      "exit_code": 0,
+      "duration_ms": 468
+    },
+    {
+      "check": "demo-evaluator-tamper",
+      "exit_code": 0,
+      "duration_ms": 1686
+    },
+    {
+      "check": "replay-evaluator-tamper",
+      "exit_code": 0,
+      "duration_ms": 313
+    },
+    {
+      "check": "ledger-evaluator-tamper",
+      "exit_code": 0,
+      "duration_ms": 500
+    },
+    {
+      "check": "demo-old-artifact",
+      "exit_code": 0,
+      "duration_ms": 1360
+    },
+    {
+      "check": "replay-old-artifact",
+      "exit_code": 0,
+      "duration_ms": 203
+    },
+    {
+      "check": "ledger-old-artifact",
+      "exit_code": 0,
+      "duration_ms": 328
+    },
+    {
+      "check": "demo-missing-deployment",
+      "exit_code": 0,
+      "duration_ms": 1125
+    },
+    {
+      "check": "replay-missing-deployment",
+      "exit_code": 0,
+      "duration_ms": 202
+    },
+    {
+      "check": "ledger-missing-deployment",
+      "exit_code": 0,
+      "duration_ms": 312
+    },
+    {
+      "check": "demo-not-deployed",
+      "exit_code": 0,
+      "duration_ms": 1110
+    },
+    {
+      "check": "replay-not-deployed",
+      "exit_code": 0,
+      "duration_ms": 218
+    },
+    {
+      "check": "ledger-not-deployed",
+      "exit_code": 0,
+      "duration_ms": 389
+    },
+    {
+      "check": "demo-unreachable",
+      "exit_code": 0,
+      "duration_ms": 1406
+    },
+    {
+      "check": "replay-unreachable",
+      "exit_code": 0,
+      "duration_ms": 187
+    },
+    {
+      "check": "ledger-unreachable",
+      "exit_code": 0,
+      "duration_ms": 344
+    },
+    {
+      "check": "demo-signature-failure",
+      "exit_code": 0,
+      "duration_ms": 1375
+    },
+    {
+      "check": "replay-signature-failure",
+      "exit_code": 0,
+      "duration_ms": 203
+    },
+    {
+      "check": "ledger-signature-failure",
+      "exit_code": 0,
+      "duration_ms": 327
+    },
+    {
+      "check": "demo-interrupted",
+      "exit_code": 0,
+      "duration_ms": 1187
+    },
+    {
+      "check": "replay-interrupted",
+      "exit_code": 0,
+      "duration_ms": 203
+    },
+    {
+      "check": "ledger-interrupted",
+      "exit_code": 0,
+      "duration_ms": 328
+    },
+    {
+      "check": "demo-stale",
+      "exit_code": 0,
+      "duration_ms": 1436
+    },
+    {
+      "check": "replay-stale",
+      "exit_code": 0,
+      "duration_ms": 281
+    },
+    {
+      "check": "ledger-stale",
+      "exit_code": 0,
+      "duration_ms": 406
+    },
+    {
+      "check": "demo-replay",
+      "exit_code": 0,
+      "duration_ms": 1389
+    },
+    {
+      "check": "replay-replay",
+      "exit_code": 0,
+      "duration_ms": 218
+    },
+    {
+      "check": "ledger-replay",
+      "exit_code": 0,
+      "duration_ms": 391
+    },
+    {
+      "check": "installed-distributions",
+      "exit_code": 0,
+      "duration_ms": 264
+    }
+  ]
+}

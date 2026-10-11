@@ -1,0 +1,1006 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:ledger-event",
+  "type": "object",
+  "properties": {
+    "algorithm": {
+      "const": "Ed25519"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v1"
+        },
+        "purpose": {
+          "const": "ledger-event"
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "transaction_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "contract_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "previous_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "state": {
+              "enum": [
+                "DRAFT",
+                "APPROVED",
+                "FROZEN",
+                "BASELINED",
+                "EXECUTING",
+                "VERIFYING",
+                "OBSERVING",
+                "PROVEN",
+                "DISPROVEN",
+                "PARTIALLY_PROVEN",
+                "INDETERMINATE",
+                "ACCEPTED",
+                "RECOVERY_REQUIRED",
+                "RECOVERED",
+                "RECOVERY_FAILED",
+                "RISK_ACCEPTED"
+              ]
+            },
+            "refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "minItems": 0,
+              "maxItems": 256
+            },
+            "packet": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "algorithm": {
+                      "const": "Ed25519"
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "const": "v1"
+                        },
+                        "purpose": {
+                          "const": "closure-packet"
+                        },
+                        "issuer": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        },
+                        "body": {
+                          "type": "object",
+                          "properties": {
+                            "transaction_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "attempt_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "contract_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "artifact_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "target_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "approval_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "baseline_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "evaluator_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "policy_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "trust_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "binding_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "ledger_head": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "evaluated_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            },
+                            "window_start": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            },
+                            "window_end": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            },
+                            "parent_packet_hash": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^sha256:[0-9a-f]{64}$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "verdict": {
+                              "enum": [
+                                "PROVEN",
+                                "DISPROVEN",
+                                "PARTIALLY_PROVEN",
+                                "INDETERMINATE"
+                              ]
+                            },
+                            "reason_codes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                              },
+                              "minItems": 0,
+                              "maxItems": 256
+                            },
+                            "checks": {
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 32,
+                              "additionalProperties": {
+                                "enum": [
+                                  "PASS",
+                                  "FAIL",
+                                  "UNKNOWN",
+                                  "NOT_COMPLETED"
+                                ]
+                              },
+                              "propertyNames": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                              }
+                            },
+                            "admitted": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^sha256:[0-9a-f]{64}$"
+                              },
+                              "minItems": 0,
+                              "maxItems": 4096
+                            },
+                            "rejected": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "hash": {
+                                    "type": "string",
+                                    "pattern": "^sha256:[0-9a-f]{64}$"
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                                  }
+                                },
+                                "required": [
+                                  "hash",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "minItems": 0,
+                              "maxItems": 4096
+                            },
+                            "window_complete": {
+                              "type": "boolean"
+                            },
+                            "recovery_required": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "transaction_id",
+                            "attempt_id",
+                            "contract_hash",
+                            "artifact_hash",
+                            "target_id",
+                            "approval_hash",
+                            "baseline_hash",
+                            "evaluator_hash",
+                            "policy_hash",
+                            "trust_hash",
+                            "binding_hash",
+                            "ledger_head",
+                            "evaluated_at",
+                            "window_start",
+                            "window_end",
+                            "parent_packet_hash",
+                            "verdict",
+                            "reason_codes",
+                            "checks",
+                            "admitted",
+                            "rejected",
+                            "window_complete",
+                            "recovery_required"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "purpose",
+                        "issuer",
+                        "key_id",
+                        "created_at",
+                        "body"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "signature": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{128}$"
+                    }
+                  },
+                  "required": [
+                    "algorithm",
+                    "payload",
+                    "signature"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "binding": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "algorithm": {
+                      "const": "Ed25519"
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "const": "v1"
+                        },
+                        "purpose": {
+                          "const": "run-binding"
+                        },
+                        "issuer": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        },
+                        "body": {
+                          "type": "object",
+                          "properties": {
+                            "transaction_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "attempt_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "contract_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "artifact_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "target_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "window_start": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            },
+                            "challenges": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "nonce": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                                  },
+                                  "check_id": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                                  },
+                                  "phase": {
+                                    "enum": [
+                                      "instant",
+                                      "window"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "nonce",
+                                  "check_id",
+                                  "phase"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "minItems": 1,
+                              "maxItems": 1024
+                            }
+                          },
+                          "required": [
+                            "transaction_id",
+                            "attempt_id",
+                            "contract_hash",
+                            "artifact_hash",
+                            "target_id",
+                            "window_start",
+                            "challenges"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "purpose",
+                        "issuer",
+                        "key_id",
+                        "created_at",
+                        "body"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "signature": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{128}$"
+                    }
+                  },
+                  "required": [
+                    "algorithm",
+                    "payload",
+                    "signature"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "receipt": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "algorithm": {
+                      "const": "Ed25519"
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "const": "v1"
+                        },
+                        "purpose": {
+                          "const": "action-receipt"
+                        },
+                        "issuer": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        },
+                        "body": {
+                          "type": "object",
+                          "properties": {
+                            "transaction_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "attempt_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "contract_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "artifact_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "target_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "receipt_id": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "operation": {
+                              "const": "deploy"
+                            },
+                            "status": {
+                              "enum": [
+                                "EXECUTED",
+                                "NOT_DEPLOYED",
+                                "UNKNOWN"
+                              ]
+                            },
+                            "recorded_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            }
+                          },
+                          "required": [
+                            "transaction_id",
+                            "attempt_id",
+                            "contract_hash",
+                            "artifact_hash",
+                            "target_id",
+                            "receipt_id",
+                            "operation",
+                            "status",
+                            "recorded_at"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "purpose",
+                        "issuer",
+                        "key_id",
+                        "created_at",
+                        "body"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "signature": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{128}$"
+                    }
+                  },
+                  "required": [
+                    "algorithm",
+                    "payload",
+                    "signature"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recovery_contract": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "const": "v1"
+                    },
+                    "contract_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "transaction_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                    },
+                    "attempt_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                    },
+                    "repo_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                    },
+                    "baseline_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "target_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                    },
+                    "intent": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "allowed_changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "minItems": 1,
+                      "maxItems": 32
+                    },
+                    "protected_resources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "minItems": 2,
+                      "maxItems": 32
+                    },
+                    "allowed_actions": {
+                      "type": "array",
+                      "items": {
+                        "enum": [
+                          "deploy"
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 1
+                    },
+                    "evaluator_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "policy_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "trust_hash": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    },
+                    "deadline_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "Z$"
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                          },
+                          "kind": {
+                            "enum": [
+                              "primary",
+                              "invariant",
+                              "deployment",
+                              "stage",
+                              "baseline"
+                            ]
+                          },
+                          "mandatory": {
+                            "type": "boolean"
+                          },
+                          "phase": {
+                            "enum": [
+                              "instant",
+                              "window"
+                            ]
+                          },
+                          "observers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                            },
+                            "minItems": 1,
+                            "maxItems": 8
+                          },
+                          "allow_not_completed": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "mandatory",
+                          "phase",
+                          "observers",
+                          "allow_not_completed"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 5,
+                      "maxItems": 32
+                    },
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "duration_ms": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 86400000
+                        },
+                        "max_gap_ms": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "min_samples": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 256
+                        },
+                        "max_age_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "max_clock_skew_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "duration_ms",
+                        "max_gap_ms",
+                        "min_samples",
+                        "max_age_ms",
+                        "max_clock_skew_ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "recovery": {
+                      "type": "object",
+                      "properties": {
+                        "mechanism": {
+                          "const": "redeploy-baseline"
+                        },
+                        "deadline_ms": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      },
+                      "required": [
+                        "mechanism",
+                        "deadline_ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "parent_packet_hash": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "contract_id",
+                    "revision",
+                    "transaction_id",
+                    "attempt_id",
+                    "repo_id",
+                    "baseline_hash",
+                    "target_id",
+                    "intent",
+                    "allowed_changes",
+                    "protected_resources",
+                    "allowed_actions",
+                    "evaluator_hash",
+                    "policy_hash",
+                    "trust_hash",
+                    "deadline_at",
+                    "checks",
+                    "window",
+                    "recovery",
+                    "parent_packet_hash"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recovery_approval": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "algorithm": {
+                      "const": "Ed25519"
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "const": "v1"
+                        },
+                        "purpose": {
+                          "const": "approval"
+                        },
+                        "issuer": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        },
+                        "body": {
+                          "type": "object",
+                          "properties": {
+                            "contract_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "trust_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "policy_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            }
+                          },
+                          "required": [
+                            "contract_hash",
+                            "trust_hash",
+                            "policy_hash"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "purpose",
+                        "issuer",
+                        "key_id",
+                        "created_at",
+                        "body"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "signature": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{128}$"
+                    }
+                  },
+                  "required": [
+                    "algorithm",
+                    "payload",
+                    "signature"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "risk": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "algorithm": {
+                      "const": "Ed25519"
+                    },
+                    "payload": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "const": "v1"
+                        },
+                        "purpose": {
+                          "const": "risk-acceptance"
+                        },
+                        "issuer": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "Z$"
+                        },
+                        "body": {
+                          "type": "object",
+                          "properties": {
+                            "packet_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "contract_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
+                            "rationale": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "expires_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "Z$"
+                            }
+                          },
+                          "required": [
+                            "packet_hash",
+                            "contract_hash",
+                            "rationale",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "purpose",
+                        "issuer",
+                        "key_id",
+                        "created_at",
+                        "body"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "signature": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{128}$"
+                    }
+                  },
+                  "required": [
+                    "algorithm",
+                    "payload",
+                    "signature"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "event_id",
+            "transaction_id",
+            "contract_hash",
+            "sequence",
+            "previous_hash",
+            "state",
+            "refs",
+            "packet",
+            "binding",
+            "receipt",
+            "recovery_contract",
+            "recovery_approval",
+            "risk"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "purpose",
+        "issuer",
+        "key_id",
+        "created_at",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "required": [
+    "algorithm",
+    "payload",
+    "signature"
+  ],
+  "additionalProperties": false
+}

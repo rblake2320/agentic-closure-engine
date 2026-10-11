@@ -1,5 +1,6 @@
 # Runtime state and signing material are never source artifacts.
 .venv/
+.venv*/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

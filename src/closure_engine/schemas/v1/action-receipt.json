@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:action-receipt",
+  "type": "object",
+  "properties": {
+    "algorithm": {
+      "const": "Ed25519"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v1"
+        },
+        "purpose": {
+          "const": "action-receipt"
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "transaction_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "contract_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "artifact_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "target_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "receipt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "operation": {
+              "const": "deploy"
+            },
+            "status": {
+              "enum": [
+                "EXECUTED",
+                "NOT_DEPLOYED",
+                "UNKNOWN"
+              ]
+            },
+            "recorded_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            }
+          },
+          "required": [
+            "transaction_id",
+            "attempt_id",
+            "contract_hash",
+            "artifact_hash",
+            "target_id",
+            "receipt_id",
+            "operation",
+            "status",
+            "recorded_at"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "purpose",
+        "issuer",
+        "key_id",
+        "created_at",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "required": [
+    "algorithm",
+    "payload",
+    "signature"
+  ],
+  "additionalProperties": false
+}

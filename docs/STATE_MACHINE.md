@@ -1,6 +1,6 @@
 # Append-only lifecycle and deterministic decisions
 
-Status: proposed. State is derived by replaying validated events, never edited as a mutable status field.
+Status: approved design with an implemented offline kernel in src/closure_engine/ledger.py. State is derived by replaying validated events, never edited as a mutable status field.
 
 ## Normal lifecycle
 

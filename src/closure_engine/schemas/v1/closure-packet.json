@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ace:v1:closure-packet",
+  "type": "object",
+  "properties": {
+    "algorithm": {
+      "const": "Ed25519"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v1"
+        },
+        "purpose": {
+          "const": "closure-packet"
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "transaction_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "contract_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "artifact_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "target_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+            },
+            "approval_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "baseline_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "evaluator_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "policy_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "trust_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "binding_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "ledger_head": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "evaluated_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "window_start": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "window_end": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            "parent_packet_hash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verdict": {
+              "enum": [
+                "PROVEN",
+                "DISPROVEN",
+                "PARTIALLY_PROVEN",
+                "INDETERMINATE"
+              ]
+            },
+            "reason_codes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+              },
+              "minItems": 0,
+              "maxItems": 256
+            },
+            "checks": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 32,
+              "additionalProperties": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "UNKNOWN",
+                  "NOT_COMPLETED"
+                ]
+              },
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+              }
+            },
+            "admitted": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "minItems": 0,
+              "maxItems": 4096
+            },
+            "rejected": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "hash": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9._:/-]{1,160}$"
+                  }
+                },
+                "required": [
+                  "hash",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 0,
+              "maxItems": 4096
+            },
+            "window_complete": {
+              "type": "boolean"
+            },
+            "recovery_required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "transaction_id",
+            "attempt_id",
+            "contract_hash",
+            "artifact_hash",
+            "target_id",
+            "approval_hash",
+            "baseline_hash",
+            "evaluator_hash",
+            "policy_hash",
+            "trust_hash",
+            "binding_hash",
+            "ledger_head",
+            "evaluated_at",
+            "window_start",
+            "window_end",
+            "parent_packet_hash",
+            "verdict",
+            "reason_codes",
+            "checks",
+            "admitted",
+            "rejected",
+            "window_complete",
+            "recovery_required"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "purpose",
+        "issuer",
+        "key_id",
+        "created_at",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "required": [
+    "algorithm",
+    "payload",
+    "signature"
+  ],
+  "additionalProperties": false
+}

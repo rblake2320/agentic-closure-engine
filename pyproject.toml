@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-closure-engine"
+version = "0.1.0"
+description = "Offline deterministic acceptance kernel for evidence-bound agent outcomes"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["cryptography==50.0.2", "jsonschema==4.26.0", "rfc8785==0.1.4"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "build==1.6.1", "ruff==0.17.0", "setuptools==84.0.0", "wheel==0.48.0"]
+
+[project.scripts]
+closure-engine = "closure_engine.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+closure_engine = ["schemas/v1/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
