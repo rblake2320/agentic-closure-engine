@@ -306,6 +306,10 @@ def redirecting_target(recorder):
                     self.end_headers()
 
                 def do_PUT(self):
+                    # Drain the real request before closing the HTTP/1.0 connection.
+                    # Windows can reset a socket closed with unread request bytes,
+                    # hiding the redirect response from the client under test.
+                    self.rfile.read(int(self.headers.get("Content-Length", "0")))
                     self._redirect(307)
 
                 def do_GET(self):

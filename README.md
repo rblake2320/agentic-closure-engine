@@ -47,7 +47,7 @@ acceptance, reconciliation, recovery, backups and separate AWL integration.
 
 The self-hosted services use separate Linux UIDs and private mounts. Live services have
 readonly root filesystems, dropped capabilities, no Docker socket and no other role's key.
-Only the local console is published; actor, broker and verifier can reach enrolled targets.
+The console and optional publisher expose loopback ports only; actor, broker and verifier can reach enrolled targets.
 The Docker administrator and enrollment operator remain trusted administrators. Native CLI
 mode supports operator-owned installations; directories alone are not privilege isolation.
 

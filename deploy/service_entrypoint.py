@@ -30,6 +30,9 @@ if mode in {"backup", "restore"}:
     except ClosureError as exc:
         print(json.dumps({"error": exc.code, "detail": str(exc)}))
         raise SystemExit(2)
+    except OSError as exc:
+        print(json.dumps({"error": "BACKUP_STORAGE_ERROR", "type": type(exc).__name__}))
+        raise SystemExit(2)
     print(json.dumps(result))
     raise SystemExit(0)
 if mode == "bootstrap":

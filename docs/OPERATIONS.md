@@ -7,8 +7,10 @@ authenticated observations and deterministic kernel decide its technical outcome
 
 `tools/start-product.ps1 -TargetProfile profile.json` installs the separate role services.
 The profile is an operator input with `target_id`, `base_url` and `checks`. Each check has
-`id`, `kind`, `phase`, `mandatory` and `probe`. Require a primary check, at least two protected
-invariants, deployment, stage and baseline checks. A minimal JSON publisher profile uses:
+`id`, `kind`, `phase`, `mandatory` and `probe`. Include a primary check, at least two protected
+invariants, deployment, stage and baseline checks. Contract freezing enforces these minimum
+acceptance requirements; profile enrollment alone does not establish an acceptable contract.
+A minimal JSON publisher profile uses:
 
 ```json
 {
