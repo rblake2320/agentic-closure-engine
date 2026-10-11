@@ -153,7 +153,7 @@ def main():
             "principal": "haiku-rotation-proof",
             "role": "viewer",
             "uid": 11007,
-            "config_inspected": False,
+            "docker_configuration_inspected": False,
             "service_restarts": int(args.restart),
             "existing_enrollment_preserved": True,
             "observations": observations,

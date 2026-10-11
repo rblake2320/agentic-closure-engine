@@ -1,4 +1,39 @@
-# Phase 0 observed validation
+# Observed validation
+
+## Operating product 0.3.0 — 2026-10-11
+
+The installed ACE wheel passed 276 tests and eleven legacy protocol-control CLI scenarios
+with source imports disabled. Exact wheel SHA256:
+`1f7e7218ab5f5270df5f7fb681e82aa9e3b7ce342fa91a521e1cc0cd6a11d863`.
+All 44 packaged source/assets matched the repository byte for byte. Six additional real
+Windows PowerShell 5.1/7 wrapper checks passed; their original assertions were retained.
+Receipts: `evidence-runs/product-release-030-final/{receipt.json,source-manifest.json,checked-start.xml}`.
+These installed checks include real HTTP targets, authenticated service processes, persistent
+keys, custody, signature verification, input continuity, reconciliation and recovery. The
+eleven legacy CLI controls use synthetic evidence and are not live deployment demonstrations.
+
+Actual Docker/browser results are retained separately under `evidence-runs/product-deployment`:
+
+| Receiving scenario | Observed result |
+| --- | --- |
+| Owner-approved catalog change through the shipped console | PROVEN, then ACCEPTED |
+| Deployed value disagrees with the frozen desired value | DISPROVEN |
+| Independently observed restoration | Child PROVEN; original RECOVERED, technical DISPROVEN retained |
+| Wrong archive digest | Refused before installation files were written |
+| Restore ownership failure | Incomplete state; startup refused |
+| Same-archive restore retry and completed retry | Worked, then AlreadyRestored |
+| Configuration export failure and same-source retry | Staging retained, then verified promotion |
+| Restored deployment activation, custom backup and checked restart | Worked; canonical services restored afterward |
+| Temporary viewer credential rotation/revocation, including restart | Old/revoked tokens 401; current token 200; owner action 403; existing enrollment preserved |
+
+The last credential check used the shipped command in a network-free UID11007 container
+mounted only to gateway auth and private test-token output. It did not perform the previously
+denied Docker configuration inspection. Both test tokens were revoked and removed. A Docker
+address-pool failure was diagnosed during restored activation; only this run's own inactive
+containers/networks were reclaimed, and all identity/data volumes were preserved before the
+successful retry. No global daemon settings or unrelated deployments were changed.
+
+The following 0.2.0/0.1.0 sections are historical, tied to their original artifacts.
 
 ## Review hardening release 0.2.0
 
