@@ -90,7 +90,11 @@ def _weakened_child(run, parent, phase="instant"):
     for ch in c["checks"]:
         for i in range(n[ch["id"]]):
             observed = timestamp(t0 + i * 30_000)
-            raw = b"candidate artifact" if ch["kind"] == "baseline" else ("restore " + ch["id"] + str(i)).encode()
+            raw = (
+                b"candidate artifact"
+                if ch["kind"] == "baseline"
+                else ("restore " + ch["id"] + str(i)).encode()
+            )
             body = {
                 "observation_id": ch["id"] + "-r-obs-" + str(i),
                 "transaction_id": c["transaction_id"],
@@ -110,7 +114,10 @@ def _weakened_child(run, parent, phase="instant"):
             }
             obs = sign(run["keys"]["verifier"], "observation", body, observed)
             ing = sign(
-                run["keys"]["custodian"], "ingestion", {"envelope_hash": digest(obs), "received_at": observed}, observed
+                run["keys"]["custodian"],
+                "ingestion",
+                {"envelope_hash": digest(obs), "received_at": observed},
+                observed,
             )
             records.append({"observation": obs, "ingestion": ing})
     receipt = copy.deepcopy(run["receipts"][0]["payload"]["body"])
@@ -140,7 +147,9 @@ def test_O04_control_same_phase_child_recovers(run):
     parent = parent_packet(run)
     frozen, child = _weakened_child(run, parent, phase="window")
     assert child["payload"]["body"]["verdict"] == "PROVEN"
-    status = recovery_status(parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"])
+    status = recovery_status(
+        parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+    )
     assert status["state"] == "RECOVERED"
 
 
@@ -149,6 +158,6 @@ def test_O04_child_cannot_downgrade_parent_window_invariant_to_instant(run):
     frozen, child = _weakened_child(run, parent, phase="instant")
     assert child["payload"]["body"]["verdict"] == "PROVEN"
     with pytest.raises(ClosureError, match="RECOVERY_COVERAGE_MISMATCH"):
-        recovery_status(parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"])
-
-
+        recovery_status(
+            parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+        )

@@ -291,8 +291,10 @@ def replay_packet(packet, store, trust):
     ):
         raise ClosureError("PACKET_INPUTS_INVALID")
     frozen = freeze(manifest["contract"], manifest["approval"], trust)
-    if any(not isinstance(manifest[field], list) or len(manifest[field]) > 4096
-           for field in ("records", "receipts")):
+    if any(
+        not isinstance(manifest[field], list) or len(manifest[field]) > 4096
+        for field in ("records", "receipts")
+    ):
         raise ClosureError("PACKET_INPUTS_INVALID")
     expected, _ = _packet_body(
         ledger_head=p["ledger_head"],

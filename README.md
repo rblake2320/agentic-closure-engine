@@ -18,15 +18,20 @@ The owner requested a review package before code, then approved that package wit
 
 ## Implementation boundaries
 
-1. Four workflow domains with separately controlled identities; operator-controlled trust roots and ledger custody are supporting infrastructure, not actor authority.
+1. Four separately enrolled signing roles are implemented. Separate operating identities, protected credentials and storage are production design requirements; the offline fixtures run under one operator identity.
 2. Mandatory-invariant failure outranks successful task checks. Missing required evidence is indeterminate. Partial proof requires authenticated known non-completion, not an absent receipt.
 3. Immutable technical verdicts, separate acceptance events, and a separately verified recovery transaction. Risk acceptance never changes a verdict.
-4. Protected public-key enrollment, external ledger checkpoints, and versioned evaluator/authority-policy hashes. A signature alone is not an outcome proof.
+4. Public-key enrollment is an operator input, pinned by an independently supplied trust hash on verification commands. External ledger checkpoints and policy/evaluator bindings are checked. Protected enrollment, rotation and revocation are later operating-service requirements.
 5. An offline Python kernel with standards-based serialization and real signatures, followed by installed-package acceptance tests. No production integration or host-account provisioning in Phase 0.
 
 Private repository: https://github.com/rblake2320/agentic-closure-engine
 
-Progress tracker: https://rob47595-1791122756383.atlassian.net/browse/KAN-129
+Progress trackers: KAN-129 (historical Phase 0), KAN-130 (hardening), KAN-131 (production trust/custody gate).
+
+Release 0.2.1 adds ledgered-input continuity, unchanged recovery invariant profiles and CLI trust pinning.
+Packet replay reconstructs its retained inputs; it alone does not establish that ACE's ledger admitted
+the packet. AWL's optional adapter checks both replay and the authoritative ledger's final packet.
+The independent review and retained regressions are described in docs/review/HARDENING.md.
 
 ## Run
 
@@ -34,7 +39,8 @@ Progress tracker: https://rob47595-1791122756383.atlassian.net/browse/KAN-129
 uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe --require-hashes -r requirements.lock
 uv pip install --python .venv\Scripts\python.exe --no-deps -e .
-.venv\Scripts\closure-engine.exe demo --output evidence-runs\my-demo
+$closureDemo = .venv\Scripts\closure-engine.exe demo --output evidence-runs\my-demo | ConvertFrom-Json
+$closureTrustPin = $closureDemo.trust_hash
 ```
 
 The demo output must be a new/empty directory. Fixture private keys remain in memory and are never exported. Public contract, approval, evidence, signed packets and checkpoint are retained.
@@ -42,7 +48,7 @@ The demo output must be a new/empty directory. Fixture private keys remain in me
 Recompute the verdict using the exact `evaluated_at` emitted by demo:
 
 ```powershell
-.venv\Scripts\closure-engine.exe evaluate-run --bundle evidence-runs\my-demo\run.json --trust evidence-runs\my-demo\trust.json --store evidence-runs\my-demo\evidence --at 2026-10-11T12:01:00.000Z --require-proven
+.venv\Scripts\closure-engine.exe evaluate-run --bundle evidence-runs\my-demo\run.json --trust evidence-runs\my-demo\trust.json --expected-trust-hash $closureTrustPin --store evidence-runs\my-demo\evidence --at $closureDemo.evaluated_at --require-proven
 ```
 
 The fixture uses a fixed clock. Without `--require-proven`, a successfully computed adverse verdict exits zero; with it an adverse verdict exits 3. Invalid input/storage exits 2 with a typed error.
