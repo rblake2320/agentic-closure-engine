@@ -65,29 +65,19 @@ def replay_audit_export(
         expected_next = page["from_sequence"] + len(page["events"])
     if pages[-1]["next_sequence"] is not None:
         raise ClosureError("EXPORT_INCOMPLETE")
-    cp = verify(checkpoint, "checkpoint", trust)
     with tempfile.TemporaryDirectory(prefix="ace-replay-") as work:
         work = Path(work)
         store = FetchingStore(work / "evidence", fetch_evidence)
         ledger = Ledger(work / "ledger.sqlite", trust, store)
-        for item in pages[0]["contracts"]:
-            ledger.register(freeze(item["contract"], item["approval"], trust))
-        for page in pages:
-            for event in page["events"]:
-                ledger.append(event, ledger.head)
-        head, sequence = ledger.position
-        if cp["sequence"] != sequence or cp["head_hash"] != head:
-            raise ClosureError("CHECKPOINT_DOES_NOT_MATCH_EXPORT")
-        ledger.verify(checkpoint)
-        if prior_checkpoint is not None:
-            ledger.verify(prior_checkpoint)  # rollback/fork relative to an earlier anchor fails here
-        result = {
-            "verified_head": head,
-            "sequence": sequence,
-            "transactions": ledger.summary()["transactions"],
-        }
+        imported = ledger.import_history(
+            [freeze(item["contract"], item["approval"], trust) for item in pages[0]["contracts"]],
+            [event for page in pages for event in page["events"]],
+            checkpoint,
+            prior_checkpoint=prior_checkpoint,
+        )
+        result = {key: imported[key] for key in ("verified_head", "sequence", "transactions")}
         if transaction is not None:
-            packet = ledger.technical_packet(transaction)
+            packet = imported["packets"].get(transaction)
             if packet is None:
                 raise ClosureError("CLOSURE_NOT_ADMITTED", transaction)
             body = replay_packet(packet, store, trust)

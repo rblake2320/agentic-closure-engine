@@ -268,7 +268,7 @@ class Ledger:
             self.store.get(ref)
         states[tx] = state
 
-    def _verify(self, db, checkpoint=None):
+    def _verify(self, db, checkpoint=None, additional_checkpoints=()):
         stored_trust = db.execute("SELECT value FROM meta WHERE key='trust_hash'").fetchone()
         if stored_trust is None or stored_trust[0] != self.trust.hash:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
@@ -297,12 +297,61 @@ class Ledger:
             head, seq = stored_hash, row_seq
             last_event_time = event_time
             history[seq] = head
-        if checkpoint is not None:
-            cp = verify(checkpoint, "checkpoint", self.trust)
+        for anchor in (*additional_checkpoints, *((checkpoint,) if checkpoint is not None else ())):
+            cp = verify(anchor, "checkpoint", self.trust)
             checkpoint_head = GENESIS if cp["sequence"] == 0 else history.get(cp["sequence"])
             if cp["trust_hash"] != self.trust.hash or checkpoint_head != cp["head_hash"]:
                 raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
         return head, seq, states, packets, bindings, contracts, input_sets, last_event_time
+
+    def import_history(self, contracts, events, checkpoint, *, prior_checkpoint=None):
+        """Atomically reconstruct an EMPTY verifier ledger and validate its entire history once.
+
+        The same replay path used by append checks signatures, chronology, every transition,
+        packet input completeness, and deterministic verdicts. No history is committed until
+        both the exact terminal checkpoint and any prior external anchor have passed.
+        This verifier-only bulk operation is not exposed by custody or actor services.
+        """
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if (
+                db.execute("SELECT 1 FROM events LIMIT 1").fetchone()
+                or db.execute("SELECT 1 FROM contracts LIMIT 1").fetchone()
+            ):
+                raise ClosureError("IMPORT_TARGET_NOT_EMPTY")
+            for contract in contracts:
+                frozen = freeze(contract.data, contract.approval, self.trust)
+                db.execute(
+                    "INSERT INTO contracts VALUES (?,?,?)",
+                    (
+                        frozen.data["transaction_id"],
+                        frozen.raw,
+                        frozen.approval_raw,
+                    ),
+                )
+            for envelope in events:
+                body = verify(envelope, "ledger-event", self.trust)
+                db.execute(
+                    "INSERT INTO events VALUES (?,?,?,?)",
+                    (
+                        body["sequence"],
+                        body["event_id"],
+                        canonical(envelope),
+                        digest(envelope),
+                    ),
+                )
+            result = self._verify(db, checkpoint, () if prior_checkpoint is None else (prior_checkpoint,))
+            anchor = verify(checkpoint, "checkpoint", self.trust)
+            if anchor["sequence"] != result[1] or anchor["head_hash"] != result[0]:
+                raise ClosureError("CHECKPOINT_DOES_NOT_MATCH_EXPORT")
+            db.execute("COMMIT")
+        self.anchor = checkpoint
+        return {
+            "verified_head": result[0],
+            "sequence": result[1],
+            "transactions": dict(result[2]),
+            "packets": dict(result[3]),
+        }
 
     def verify(self, checkpoint=None):
         with self._db() as db:
