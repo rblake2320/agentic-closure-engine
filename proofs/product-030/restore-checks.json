@@ -1,0 +1,11 @@
+{
+  "source_receipt_sha256": "b362d3133d0576f6d12576bf4bf203e484252eb2eaf78df6502a6c70cb9dbc50",
+  "source_receipt": "evidence-runs/product-deployment/restore-wrapper-final.json",
+  "result": "Worked",
+  "checks": 6,
+  "restored_transactions": {
+    "catalog-corrected-20261011": "ACCEPTED",
+    "catalog-disagreement-20261011": "RECOVERED",
+    "catalog-disagreement-20261011/recovery": "PROVEN"
+  }
+}
