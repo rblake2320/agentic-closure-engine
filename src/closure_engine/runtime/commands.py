@@ -1,0 +1,191 @@
+"""Shipped operating CLI commands. Every command prints one JSON object; errors exit 2.
+
+Runtime commands never accept a time argument: the service clock supplies every timestamp.
+The trust pin comes from --expected-trust-hash or ACE_EXPECTED_TRUST_HASH, never from the
+deployment folder.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+from ..protocol import ClosureError, canonical, strict_loads
+from .deployment import Deployment, enroll, enroll_target
+from .identities import ROLES, init_identity
+from .service import Runtime, artifact_bytes
+from .target import ReferenceTarget, ReferenceTargetServer
+
+TX_ACTIONS = (
+    "propose",
+    "approve",
+    "freeze",
+    "baseline",
+    "bind",
+    "deploy",
+    "run",
+    "observe",
+    "close",
+    "accept",
+    "status",
+    "recover",
+    "recover-complete",
+    "bundle",
+)
+COMMANDS = {"init", "enroll", "target-enroll", "target-init", "target-serve", "tx", "reconcile", "checkpoint", "status"}
+
+
+def _pin(parser):
+    parser.add_argument("--deployment", required=True, help="Deployment root (role state roots beneath it)")
+    parser.add_argument(
+        "--expected-trust-hash",
+        default=os.environ.get("ACE_EXPECTED_TRUST_HASH"),
+        help="Operator-held enrollment pin (or ACE_EXPECTED_TRUST_HASH)",
+    )
+
+
+def register(sub):
+    p = sub.add_parser("init", help="Create one persistent role identity (private key never printed)")
+    p.add_argument("--deployment", required=True)
+    p.add_argument("--role", required=True, choices=ROLES)
+    p.add_argument("--issuer", required=True)
+    p = sub.add_parser("enroll", help="Operator: enroll every role's public key; prints the trust pin")
+    p.add_argument("--deployment", required=True)
+    p.add_argument("--check", action="append", required=True, help="Check id the verifier may sign (repeat)")
+    p = sub.add_parser("target-enroll", help="Operator: enroll an HTTP target and its probe profile")
+    p.add_argument("--deployment", required=True)
+    p.add_argument("--target-id", required=True)
+    p.add_argument("--base-url", required=True)
+    p.add_argument("--checks", required=True, help="JSON file: list of {id, kind, phase, mandatory, probe}")
+    p.add_argument("--timeout-ms", type=int, default=5000)
+    p = sub.add_parser("target-init", help="Initialise a persistent reference target with its first artifact")
+    p.add_argument("--state-dir", required=True)
+    p.add_argument("--artifact", required=True)
+    p.add_argument("--token-sha256", required=True)
+    p = sub.add_parser("target-serve", help="Serve a reference target (ACE HTTP target protocol v1)")
+    p.add_argument("--state-dir", required=True)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, required=True)
+    p = sub.add_parser("tx", help="Run one lifecycle step of a transaction")
+    p.add_argument("action", choices=TX_ACTIONS)
+    _pin(p)
+    p.add_argument("--transaction", required=True)
+    p.add_argument("--target", help="propose: enrolled target id")
+    p.add_argument("--artifact", help="propose: artifact file to deploy")
+    p.add_argument("--intent", help="propose: human-readable intent")
+    p.add_argument("--duration-ms", type=int, default=60_000)
+    p.add_argument("--min-samples", type=int, default=3)
+    p.add_argument("--skew-ms", type=int, default=2_000)
+    p.add_argument("--settle-ms", type=int, default=3_000)
+    p.add_argument("--deadline-ms", type=int, default=600_000)
+    p.add_argument("--recovery-deadline-ms", type=int, default=600_000)
+    p.add_argument("--phase", choices=("all", "instant", "window"), default="all")
+    p.add_argument("--output", help="bundle: write the runtime bundle to this new file")
+    for name, text in (("reconcile", "Broker: resolve pending intents from target state"),
+                       ("checkpoint", "Custodian: sign and print the current ledger head for export"),
+                       ("status", "Verified ledger summary")):
+        _pin(sub.add_parser(name, help=text))
+
+
+def _read_json_file(path):
+    try:
+        return strict_loads(Path(path).read_bytes())
+    except FileNotFoundError as exc:
+        raise ClosureError("INPUT_MISSING", str(path)) from exc
+
+
+def _runtime(args):
+    if not args.expected_trust_hash:
+        raise ClosureError("TRUST_ANCHOR_REQUIRED")
+    root = Path(args.deployment)
+    if not root.is_dir():
+        raise ClosureError("DEPLOYMENT_MISSING", str(root))
+    return Runtime(Deployment(root), args.expected_trust_hash)
+
+
+def _tx(args):
+    runtime = _runtime(args)
+    tx = args.transaction
+    action = args.action
+    if action == "propose":
+        if not (args.target and args.artifact and args.intent):
+            raise ClosureError("PROPOSE_REQUIRES_TARGET_ARTIFACT_INTENT")
+        return runtime.propose(
+            args.target,
+            tx,
+            artifact_bytes(args.artifact),
+            intent=args.intent,
+            duration_ms=args.duration_ms,
+            min_samples=args.min_samples,
+            max_clock_skew_ms=args.skew_ms,
+            settle_ms=args.settle_ms,
+            deadline_ms=args.deadline_ms,
+            recovery_deadline_ms=args.recovery_deadline_ms,
+        )
+    if action == "observe":
+        return runtime.observe(tx, phase=args.phase)
+    if action == "recover":
+        return runtime.begin_recovery(tx)
+    if action == "recover-complete":
+        return runtime.complete_recovery(tx)
+    if action == "bundle":
+        if not args.output:
+            raise ClosureError("OUTPUT_REQUIRED")
+        out = Path(args.output)
+        if out.exists():
+            raise ClosureError("STATE_ALREADY_EXISTS", str(out))
+        out.write_bytes(canonical(runtime.export_bundle(tx)) + b"\n")
+        return {"transaction_id": tx, "bundle": str(out)}
+    return getattr(runtime, action)(tx)
+
+
+def dispatch(args):
+    if args.command == "init":
+        deployment = Deployment(args.deployment)
+        return init_identity(deployment.role_root(args.role), args.role, args.issuer)
+    if args.command == "enroll":
+        return enroll(Deployment(args.deployment), args.check)
+    if args.command == "target-enroll":
+        checks = _read_json_file(args.checks)
+        if not isinstance(checks, list):
+            raise ClosureError("INVALID_TARGET_CHECK")
+        return enroll_target(
+            Deployment(args.deployment), args.target_id, args.base_url, checks, timeout_ms=args.timeout_ms
+        )
+    if args.command == "target-init":
+        return ReferenceTarget.initialize(args.state_dir, artifact_bytes(args.artifact), args.token_sha256)
+    if args.command == "target-serve":
+        if args.host not in {"127.0.0.1", "::1", "localhost"} and not os.environ.get("ACE_TARGET_ALLOW_NETWORK"):
+            raise ClosureError("NON_LOOPBACK_BIND_REQUIRES_ACE_TARGET_ALLOW_NETWORK")
+        server = ReferenceTargetServer((args.host, args.port), args.state_dir)
+        print(json.dumps({"service": "ace-reference-target", "port": server.server_address[1]}), flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return None
+    if args.command == "tx":
+        return _tx(args)
+    runtime = _runtime(args)
+    if args.command == "reconcile":
+        return runtime.reconcile()
+    if args.command == "checkpoint":
+        return runtime.checkpoint()
+    return runtime.status()
+
+
+def run(args):
+    """Execute a runtime command; returns the process exit code."""
+    try:
+        result = dispatch(args)
+        if result is not None:
+            print(json.dumps(result, sort_keys=True))
+        return 0
+    except ClosureError as exc:
+        print(json.dumps({"error": exc.code, "detail": str(exc)}), file=sys.stderr)
+        return 2
+    except (OSError, KeyError, TypeError) as exc:
+        print(json.dumps({"error": "INPUT_OR_STORAGE_ERROR", "type": type(exc).__name__}), file=sys.stderr)
+        return 2
