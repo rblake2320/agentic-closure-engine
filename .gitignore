@@ -1,0 +1,15 @@
+# Runtime state and signing material are never source artifacts.
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+runtime/
+private/
+evidence-runs/
+.env
+.env.*
+*.key
+*.pem
