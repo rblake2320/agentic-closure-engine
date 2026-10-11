@@ -42,7 +42,7 @@ The demo output must be a new/empty directory. Fixture private keys remain in me
 Recompute the verdict using the exact `evaluated_at` emitted by demo:
 
 ```powershell
-.venv\Scripts\closure-engine.exe evaluate-run --bundle evidence-runs\my-demo\run.json --trust evidence-runs\my-demo\trust.json --store evidence-runs\my-demo\evidence --at 2026-10-11T08:01:00.000Z --require-proven
+.venv\Scripts\closure-engine.exe evaluate-run --bundle evidence-runs\my-demo\run.json --trust evidence-runs\my-demo\trust.json --store evidence-runs\my-demo\evidence --at 2026-10-11T12:01:00.000Z --require-proven
 ```
 
 The fixture uses a fixed clock. Without `--require-proven`, a successfully computed adverse verdict exits zero; with it an adverse verdict exits 3. Invalid input/storage exits 2 with a typed error.
