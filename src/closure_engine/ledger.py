@@ -329,6 +329,12 @@ class Ledger:
         with self._db() as db:
             return self._verify(db)[7]
 
+    def summary(self, checkpoint=None):
+        """Verified head, sequence and every transaction state from one storage snapshot."""
+        with self._db() as db:
+            result = self._verify(db, checkpoint)
+        return {"verified_head": result[0], "sequence": result[1], "transactions": dict(result[2])}
+
     def state(self, transaction_id):
         with self._db() as db:
             return self._verify(db)[2].get(transaction_id)

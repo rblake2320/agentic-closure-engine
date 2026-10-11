@@ -43,6 +43,7 @@ def main(argv=None):
     p.add_argument("--expected-trust-hash", required=True, help=PIN_HELP)
     p.add_argument("--store", required=True)
     p.add_argument("--checkpoint", required=True)
+    p.add_argument("--transaction", help="Report one transaction; default reports every transaction")
     p = sub.add_parser("verify-packet", help="Independently replay a signed packet from retained inputs")
     p.add_argument("--packet", required=True)
     p.add_argument("--trust", required=True)
@@ -59,7 +60,7 @@ def main(argv=None):
             trust = TrustStore.from_dict(read_json(args.trust))
             if not hmac.compare_digest(trust.hash, args.expected_trust_hash):
                 raise ClosureError("TRUST_ANCHOR_MISMATCH")
-            store = EvidenceStore(args.store)
+            store = EvidenceStore(args.store, create=False)
             if args.command == "evaluate-run":
                 bundle = read_json(args.bundle)
                 if set(bundle) != {"mode", "contract", "approval", "binding", "records", "receipts"}:
@@ -84,11 +85,12 @@ def main(argv=None):
                     raise ClosureError("LEDGER_MISSING")
                 checkpoint = read_json(args.checkpoint)
                 ledger = Ledger(args.ledger, trust, store, checkpoint=checkpoint)
-                result = {
-                    "verified_head": ledger.verify(checkpoint),
-                    "state": ledger.state("fixture-transaction"),
-                    "sequence": ledger.sequence,
-                }
+                result = ledger.summary(checkpoint)
+                if args.transaction is not None:
+                    if args.transaction not in result["transactions"]:
+                        raise ClosureError("TRANSACTION_UNKNOWN", args.transaction)
+                    result["transaction"] = args.transaction
+                    result["state"] = result["transactions"][args.transaction]
         print(json.dumps(result, sort_keys=True))
         return (
             3

@@ -48,7 +48,7 @@ def test_installed_cli_demo_and_independent_replay(tmp_path):
         output / "checkpoint.json",
     )
     assert checkpoint.returncode == 0, checkpoint.stderr
-    assert json.loads(checkpoint.stdout)["state"] == "ACCEPTED"
+    assert json.loads(checkpoint.stdout)["transactions"] == {"fixture-transaction": "ACCEPTED"}
     assert not list(output.rglob("*.key")) and not list(output.rglob("*.pem"))
 
 
