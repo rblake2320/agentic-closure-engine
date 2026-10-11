@@ -12,13 +12,14 @@ Version one has one repository, bounded patch, deployment target, verifier path 
 
 ## Proposed repository tree
 
-Only README, AGENTS, .gitignore and the five design documents exist now. The rest of this tree is proposed, not implemented.
+Only README, AGENTS, .gitignore, .gitattributes and the five design documents exist now. The rest of this tree is proposed, not implemented.
 
 ```text
 agentic-closure-engine/
   README.md
   AGENTS.md
   .gitignore
+  .gitattributes
   pyproject.toml
   dependency lock file
   schemas/v1/
