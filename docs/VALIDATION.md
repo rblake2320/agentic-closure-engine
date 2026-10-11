@@ -1,5 +1,19 @@
 # Phase 0 observed validation
 
+## Review hardening release 0.2.0
+
+On 2026-10-11 the final installed Python3.13.5 wheel passed 100 tests and eleven independently
+replayed/checkpointed CLI scenarios. Receipt: proofs/windows-python313-review/receipt.json.
+Wheel SHA256: 4898526b956dcea5bf858c0175c9b2b7bdcdf6ca99254e79d4a5d9a5dfa782c1.
+GitHub run38154775568 succeeded in all four Windows/Linux x Python3.12/3.13 jobs for source
+ce3578923c699f9cef8164d48d94055f58024ce0. Retained-input replay, qualified mandatory-FAIL
+precedence and inherited recovery-resource obligations are detailed in docs/review/HARDENING.md.
+Its red regressions are retained locally. The independently versioned AWL adapter also tested
+this exact installed wheel in a disposable HTTP application; AWL proofs/live-http retains
+the actual read-backs, failures, verified restoration and portable public-key replay.
+
+The 0.1.0 results below are historical and remain tied to their original policy/artifact.
+
 Worked on 2026-10-11: the final installed Python 3.12.10 wheel passed 78 tests, zero failures, plus eleven CLI scenarios with independent replay and checkpoint verification. Imports resolved to the new environment's site-packages rather than src. The source was formatted and Ruff checks passed.
 
 Final local retained receipt: `evidence-runs/release-journal-312/receipt.json`. A copy is committed at [proofs/windows-python312/receipt.json](../proofs/windows-python312/receipt.json).
