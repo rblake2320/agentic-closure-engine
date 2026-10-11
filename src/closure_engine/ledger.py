@@ -246,6 +246,7 @@ class Ledger:
                 self.trust,
                 milliseconds(envelope["payload"]["created_at"]),
                 c["recovery"]["deadline_ms"],
+                store=self.store,
             )
             if status["state"] != state:
                 raise ClosureError("RECOVERY_NOT_VERIFIED", status["reason"])

@@ -13,6 +13,14 @@ packet admission invoke this replay. The CLI exposes verify-packet. Valid contro
 fabrication, reason/check/admitted/rejected/window discrepancies. The ledger remains conservative
 with full replay on append, including retained input reads. This increases F05's audit cost.
 
+F04 reproduced: a child contract could replace both protected resource names with unrelated
+names while still earning RECOVERED. Recovery now replays both signed packets against retained
+inputs and requires the parent's exact resource set plus all mandatory invariant obligations.
+The public recovery API requires evidence custody. The combined disposable HTTP demonstration
+also exercises actual current-artifact preconditions, baseline behavior/config/auth restoration
+and separately accepted recovery work, preserving the original failed verdict. General resource
+adapters and operating identities remain subsequent integration work.
+
 Protocol compatibility: package 0.2.0 requires inputs_hash and a new policy digest. Previously
 frozen 0.1.0 contracts/ledgers are preserved with their original pinned verifier; they are not
 silently migrated or accepted under the new policy. New approvals must bind the new policy.
@@ -27,8 +35,8 @@ before nonce-conflict exclusion. Both contradictory digest orders yield DISPROVE
 without a valid challenge, signature, binding, bytes or freshness remains excluded.
 
 Remaining production review work is separately tracked: F02 operator-authenticated enrollment,
-rotation/revocation; F03 hostile filesystem custody and no-follow guarantees; F04 explicit
-protected-resource restoration coverage and external current-state read-back; F05 bounded
+rotation/revocation; F03 hostile filesystem custody and no-follow guarantees; F04 generalized
+resource-specific restoration profiles beyond the bounded HTTP example; F05 bounded
 authenticated snapshots/segment roots. No operating identity, ACL or production key changes
 are bundled into this offline release. AWL is a separate repository/product, using ACE replay
 through an optional adapter rather than copying verdict logic.

@@ -18,7 +18,7 @@ def parent_packet(run):
     )
 
 
-def child_packet(run, parent, fail=False, wrong_target=False):
+def child_packet(run, parent, fail=False, wrong_target=False, protected_resources=None):
     c = copy.deepcopy(run["contract"])
     c.update(
         transaction_id="recovery-1",
@@ -28,6 +28,8 @@ def child_packet(run, parent, fail=False, wrong_target=False):
         baseline_hash=run["artifact"],
         deadline_at=timestamp(run["start"] + 180_000),
     )
+    if protected_resources is not None:
+        c["protected_resources"] = protected_resources
     approval = sign(
         run["keys"]["owner"],
         "approval",
@@ -90,6 +92,15 @@ def child_packet(run, parent, fail=False, wrong_target=False):
     return frozen, packet
 
 
+def test_recovery_cannot_drop_parent_protected_resources(run):
+    parent = parent_packet(run)
+    frozen, child = child_packet(run, parent, protected_resources=["unrelated-a", "unrelated-b"])
+    with pytest.raises(ClosureError, match="RECOVERY_COVERAGE_MISMATCH"):
+        recovery_status(
+            parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+        )
+
+
 @pytest.mark.parametrize(
     ("fail", "wrong_target", "expected"),
     [(False, False, "RECOVERED"), (True, False, "RECOVERY_FAILED"), (False, True, "RECOVERY_FAILED")],
@@ -98,7 +109,9 @@ def test_A09_A10_verified_recovery(run, fail, wrong_target, expected):
     parent = parent_packet(run)
     before = digest(parent)
     frozen, child = child_packet(run, parent, fail, wrong_target)
-    result = recovery_status(parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000)
+    result = recovery_status(
+        parent, frozen, child, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+    )
     assert result["state"] == expected
     assert digest(parent) == before
 
@@ -106,11 +119,15 @@ def test_A09_A10_verified_recovery(run, fail, wrong_target, expected):
 def test_A25_missing_restoration_evidence(run):
     parent = parent_packet(run)
     assert (
-        recovery_status(parent, None, None, run["trust"], run["start"] + 61_000, 120_000)["state"]
+        recovery_status(parent, None, None, run["trust"], run["start"] + 61_000, 120_000, store=run["store"])[
+            "state"
+        ]
         == "RECOVERY_REQUIRED"
     )
     assert (
-        recovery_status(parent, None, None, run["trust"], run["start"] + 180_001, 120_000)["state"]
+        recovery_status(
+            parent, None, None, run["trust"], run["start"] + 180_001, 120_000, store=run["store"]
+        )["state"]
         == "RECOVERY_FAILED"
     )
 
@@ -132,7 +149,9 @@ def test_A24_wrong_recovery_precondition(run):
     body.update(contract_hash=changed.hash, baseline_hash=c["baseline_hash"])
     changed_packet = sign(run["keys"]["authority"], "closure-packet", body, timestamp(run["start"] + 120_000))
     with pytest.raises(ClosureError, match="RECOVERY_PRECONDITION_MISMATCH"):
-        recovery_status(parent, changed, changed_packet, run["trust"], run["start"] + 120_000, 120_000)
+        recovery_status(
+            parent, changed, changed_packet, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+        )
 
 
 def test_recovery_cannot_use_pre_parent_observation_window(run):
@@ -142,4 +161,6 @@ def test_recovery_cannot_use_pre_parent_observation_window(run):
     body["window_start"] = timestamp(run["start"])
     forged = sign(run["keys"]["authority"], "closure-packet", body, timestamp(run["start"] + 120_000))
     with pytest.raises(ClosureError, match="RECOVERY_PRECEDES_PARENT"):
-        recovery_status(parent, frozen, forged, run["trust"], run["start"] + 120_000, 120_000)
+        recovery_status(
+            parent, frozen, forged, run["trust"], run["start"] + 120_000, 120_000, store=run["store"]
+        )
