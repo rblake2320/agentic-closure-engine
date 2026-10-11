@@ -54,7 +54,7 @@ The partial/deployment rule resolves the supplied matrix's tension with "missing
 - An action receipt is not independent outcome evidence. A deployment receipt alone cannot prove behavior.
 - One immutable technical verdict packet closes each attempt. Further investigation or later regression creates a linked attempt/transaction; it never overwrites the original verdict.
 - The authority uses a pinned evaluation policy, enrolled trust snapshot and trusted evaluation time. Replaying those identical inputs reproduces the verdict and reason codes.
-- No verdict depends on model prose, environment-selected scripts, random sampling or an agent-selected clock/keyring.
+- No verdict depends on model prose, environment-selected scripts or random sampling. Enrollment pins and evaluation time are explicit operator/authority inputs; the offline kernel has no independent physical clock. Ledger event times and transaction evaluation times cannot regress. A compromised authority clock can still misstate a recovery deadline; independent time custody is a production gate.
 - Persist intent before side effects. A crash between action and receipt requires reconciliation; an unresolved action is not blindly reissued.
 - ACCEPTED requires PROVEN. A human who accepts risk on another verdict emits a separate RISK_ACCEPTED event; the technical result and normal acceptance eligibility stay unchanged.
 

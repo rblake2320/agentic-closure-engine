@@ -134,9 +134,13 @@ class Ledger:
                 raise ClosureError("VERDICT_ARTIFACT_BINDING_MISMATCH")
             manifest = strict_loads(self.store.get(p["inputs_hash"]))
             current = {digest(value) for value in manifest["records"] + manifest["receipts"]}
-            if not input_sets.get(tx, set()) <= current:
+            prior = input_sets.get(tx, {"records": set(), "evaluated_at": -1})
+            if not prior["records"] <= current:
                 raise ClosureError("LEDGERED_EVIDENCE_OMITTED")
-            input_sets[tx] = current
+            evaluated_at = milliseconds(p["evaluated_at"])
+            if evaluated_at < prior["evaluated_at"]:
+                raise ClosureError("EVALUATION_TIME_REGRESSION")
+            input_sets[tx] = {"records": current, "evaluated_at": evaluated_at}
         if state in VERDICTS:
             if old not in ACTIVE or tx in packets:
                 raise ClosureError("VERDICT_ALREADY_FINAL_OR_ILLEGAL")
@@ -272,12 +276,15 @@ class Ledger:
         checkpoint = checkpoint if checkpoint is not None else self.anchor
         contracts = self._contracts(db)
         states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
-        head, seq = GENESIS, 0
+        head, seq, last_event_time = GENESIS, 0, None
         for row_seq, event_id, raw, stored_hash in db.execute(
             "SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence"
         ):
             envelope = strict_loads(raw)
             b = verify(envelope, "ledger-event", self.trust)
+            event_time = milliseconds(envelope["payload"]["created_at"])
+            if last_event_time is not None and event_time < last_event_time:
+                raise ClosureError("EVENT_TIME_REGRESSION")
             if (
                 row_seq != seq + 1
                 or b["sequence"] != row_seq
@@ -289,13 +296,14 @@ class Ledger:
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
             self._apply(envelope, states, packets, bindings, contracts, input_sets)
             head, seq = stored_hash, row_seq
+            last_event_time = event_time
             history[seq] = head
         if checkpoint is not None:
             cp = verify(checkpoint, "checkpoint", self.trust)
             checkpoint_head = GENESIS if cp["sequence"] == 0 else history.get(cp["sequence"])
             if cp["trust_hash"] != self.trust.hash or checkpoint_head != cp["head_hash"]:
                 raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
-        return head, seq, states, packets, bindings, contracts, input_sets
+        return head, seq, states, packets, bindings, contracts, input_sets, last_event_time
 
     def verify(self, checkpoint=None):
         with self._db() as db:
@@ -309,6 +317,11 @@ class Ledger:
     def sequence(self):
         with self._db() as db:
             return self._verify(db)[1]
+
+    @property
+    def last_event_time(self):
+        with self._db() as db:
+            return self._verify(db)[7]
 
     def state(self, transaction_id):
         with self._db() as db:
@@ -325,7 +338,7 @@ class Ledger:
         h = digest(raw)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
-            head, seq, states, packets, bindings, contracts, input_sets = self._verify(db)
+            head, seq, states, packets, bindings, contracts, input_sets, last_event_time = self._verify(db)
             existing = db.execute(
                 "SELECT envelope,event_hash FROM events WHERE event_id=?", (b["event_id"],)
             ).fetchone()
@@ -336,6 +349,11 @@ class Ledger:
                 return existing[1]
             if head != expected_head or b["previous_hash"] != head or b["sequence"] != seq + 1:
                 raise ClosureError("STALE_LEDGER_HEAD")
+            if (
+                last_event_time is not None
+                and milliseconds(envelope["payload"]["created_at"]) < last_event_time
+            ):
+                raise ClosureError("EVENT_TIME_REGRESSION")
             self._apply(envelope, states, packets, bindings, contracts, input_sets)
             db.execute("INSERT INTO events VALUES (?,?,?,?)", (seq + 1, b["event_id"], raw, h))
             db.execute("COMMIT")
