@@ -15,7 +15,7 @@ import threading
 from ..contracts import freeze
 from ..crypto import sign, verify
 from ..ledger import Ledger
-from ..protocol import POLICY_HASH, ClosureError, digest, strict_loads, validate
+from ..protocol import GENESIS, POLICY_HASH, ClosureError, digest, strict_loads, validate
 from ..store import EvidenceStore
 from . import evaluator
 from .clock import SystemClock
@@ -49,11 +49,18 @@ class LocalCustody:
     @property
     def ledger(self):
         if self._ledger is None:
-            path = self.root / "ledger.sqlite"
-            checkpoint = (
-                read_json(self.root / "checkpoint.json", "CHECKPOINT_MISSING") if path.exists() else None
-            )
-            self._ledger = Ledger(path, self.trust, self.store, checkpoint=checkpoint)
+            with self._lock:
+                path = self.root / "ledger.sqlite"
+                anchor = self.root / "checkpoint.json"
+                if not path.exists() and not anchor.exists():
+                    # Brand-new custody: anchor the empty history BEFORE creating the database, so
+                    # any later process can reopen it and a crash in between leaves a valid state.
+                    self._sign_checkpoint(0, GENESIS)
+                # An existing ledger without its anchor is refused (never re-anchored), and an
+                # anchor without its ledger is verified against the recreated empty history,
+                # which fails for any anchor beyond genesis (truncation).
+                checkpoint = read_json(anchor, "CHECKPOINT_MISSING")
+                self._ledger = Ledger(path, self.trust, self.store, checkpoint=checkpoint)
         return self._ledger
 
     def _custodian(self):
