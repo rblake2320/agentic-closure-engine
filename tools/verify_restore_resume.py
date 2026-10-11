@@ -80,6 +80,22 @@ def main():
         )
         return result
 
+    wrong = run(base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash, "0" * 64])
+    assert wrong.returncode == 2 and "RESTORE_ARCHIVE_DIGEST_MISMATCH" in wrong.stdout
+    empty = run(
+        base
+        + [
+            "--entrypoint",
+            "python",
+            "agentic-closure-engine:0.3.0",
+            "-I",
+            "-c",
+            "from pathlib import Path; "
+            "assert not any(p.is_file() for p in Path('/volumes').rglob('*')); "
+            "print('NO_INSTALLATION_FILES')",
+        ]
+    )
+    assert empty.returncode == 0 and "NO_INSTALLATION_FILES" in empty.stdout
     first = run(
         base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash, args.expected_archive_hash]
     )
@@ -119,9 +135,9 @@ def main():
     )
     assert again.returncode == 0 and json.loads(again.stdout)["result"] == "AlreadyRestored", again.stderr
     Path(args.output).write_text(
-        json.dumps({"result": "Worked", "prefix": prefix, "cases": 4, "observations": observations}, indent=2)
+        json.dumps({"result": "Worked", "prefix": prefix, "cases": 6, "observations": observations}, indent=2)
     )
-    print(json.dumps({"result": "Worked", "cases": 4, "receipt": args.output, "volumes_retained": prefix}))
+    print(json.dumps({"result": "Worked", "cases": 6, "receipt": args.output, "volumes_retained": prefix}))
 
 
 if __name__ == "__main__":

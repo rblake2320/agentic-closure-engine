@@ -25,7 +25,7 @@ $staging = $runtime + '.staging'
 $binding = [ordered]@{archive_sha256=$ExpectedArchiveHash.ToLowerInvariant(); trust_hash=$TrustHash; checkpoint_sha256=(Get-FileHash -LiteralPath $checkpointFile).Hash.ToLowerInvariant(); deployment=$DeploymentName}
 $bindingFile = Join-Path $staging '.restore-source.json'
 if (Test-Path -LiteralPath $staging) {
-    if (-not (Test-Path -LiteralPath $bindingFile)) { throw 'Restore export staging has no authenticated source binding; inspect it before retrying.' }
+    if (-not (Test-Path -LiteralPath $bindingFile)) { throw 'Restore export staging has no recorded source binding; inspect it before retrying.' }
     $previousBinding = Get-Content -Raw -LiteralPath $bindingFile | ConvertFrom-Json
     if (@($previousBinding.PSObject.Properties.Name).Count -ne $binding.Count -or @($binding.Keys | Where-Object { $previousBinding.$_ -ne $binding[$_] }).Count) { throw 'Restore export staging belongs to a different source; refused.' }
 }
@@ -75,6 +75,6 @@ for path in entries:
 $copyArgs = @('run','--rm','--network','none','--read-only','--user','0:0','--mount',"type=volume,source=$($DeploymentName)_export-data,target=/exports,readonly",'--mount',"type=bind,source=$staging,target=/configured",'--entrypoint','python','agentic-closure-engine:0.3.0','-I','-c',$copyCode)
 & docker @copyArgs
 if ($LASTEXITCODE -ne 0) { throw "Restored configuration export failed; volumes and staging retained at $staging. Correct the storage failure and retry the same command; no runtime was promoted." }
-Move-Item -LiteralPath $staging -Destination $runtime
+[IO.Directory]::Move($staging, $runtime)
 Write-Output "Verified restore configuration: $runtime"
 if ($Start) { Invoke-CheckedProductStart @{RuntimeDirectory=$runtime; DeploymentName=$DeploymentName; ConsolePort=$ConsolePort; PublisherPort=$PublisherPort} "Verified restore configuration saved at $runtime; no running-service success is claimed." }

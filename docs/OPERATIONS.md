@@ -72,6 +72,13 @@ tools/backup-product.ps1 -OutputDirectory .backups/new-snapshot -KeyDirectory .b
 Keep the decryption key in separate operator-controlled storage. Preserve an independently
 held latest signed custodian checkpoint outside the archive; it is required for restoration.
 A valid old archive cannot silently roll history back behind that anchor.
+The wrapper saves `snapshot.receipt.json` beside the separate key, recording the archive digest
+and trust pin before restart. `BACKUP_SAVED` means the archive exists; `Worked` is written only
+after the services pass startup. A refused or failed restart terminates the wrapper with the
+saved-state location. Keep the receipt apart from the archive. Directory separation is checked
+through filesystem handles; choose independent storage if protection from device loss is needed.
+For a restored deployment, pass its `-RuntimeDirectory`, `-DeploymentName`, `-ConsolePort` and
+`-PublisherPort` to the backup command.
 
 ```powershell
 tools/restore-product.ps1 -BackupDirectory .backups/new-snapshot `
@@ -84,6 +91,10 @@ Restore targets new empty volumes. Incomplete installation has an INSTALLING mar
 start; a retry with the same immutable archive checks existing bytes and resumes missing files.
 COMPLETE is written last. There is no atomic rename across separate Docker volumes.
 Staging uses tmpfs, so killed staging containers do not retain plaintext keys on a scratch disk.
+The restore container checks the supplied archive digest against a private frozen copy before
+decryption. Configuration export uses a source-bound sibling staging directory; a failed copy
+can resume with the same archive and checkpoint, and promotion refuses an existing destination.
+The plain `.restore-source.json` records operator-selected inputs; it is not a signature.
 Startup refuses another active deployment with the same signing enrollment. Stop the original
 authority before activating restored keys; never operate two independent ledgers with them.
 Use `tools/start-product.ps1` for every start; direct Compose invocation bypasses the host
