@@ -30,7 +30,6 @@ CHECKS = [
             "type": "http-json",
             "path": "/answer",
             "pointer": "/answer",
-            "artifact_pointer": "/routes/~1answer/answer",
         },
     },
     {
@@ -77,6 +76,11 @@ def artifact(answer, other="stable"):
     return json.dumps({"routes": routes}, sort_keys=True).encode()
 
 
+def expect_of(raw):
+    """The owner's desired value for the primary check: here, the answer the change should serve."""
+    return {"primary": json.loads(raw)["routes"]["/answer"]["answer"]}
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -106,6 +110,7 @@ def run_to_verdict(runtime, tx, raw):
         tx,
         raw,
         intent="Change the answer",
+        expect=expect_of(raw),
         duration_ms=WINDOW["duration_ms"],
         min_samples=WINDOW["min_samples"],
         max_clock_skew_ms=WINDOW["max_clock_skew_ms"],
@@ -172,7 +177,9 @@ def run_to_verdict_child(runtime, tx):
 def test_concurrent_change_blocks_deploy_without_side_effect(world):
     deployment, pin, tmp = world
     runtime = Runtime(deployment, pin)
-    runtime.propose("shop/api", "tx-race", artifact(4), intent="race", **{k: v for k, v in WINDOW.items()})
+    runtime.propose(
+        "shop/api", "tx-race", artifact(4), intent="race", expect=expect_of(artifact(4)), **WINDOW
+    )
     runtime.approve("tx-race")
     runtime.freeze("tx-race")
     runtime.baseline("tx-race")
@@ -189,7 +196,9 @@ def test_concurrent_change_blocks_deploy_without_side_effect(world):
 def test_crash_after_side_effect_reconciles_from_target_state(world):
     deployment, pin, _ = world
     runtime = Runtime(deployment, pin)
-    runtime.propose("shop/api", "tx-crash", artifact(5), intent="crash", **WINDOW)
+    runtime.propose(
+        "shop/api", "tx-crash", artifact(5), intent="crash", expect=expect_of(artifact(5)), **WINDOW
+    )
     runtime.approve("tx-crash")
     runtime.freeze("tx-crash")
     runtime.baseline("tx-crash")
@@ -219,7 +228,9 @@ def test_crash_after_side_effect_reconciles_from_target_state(world):
 def test_unresolvable_target_state_is_quarantined_not_retried(world):
     deployment, pin, _ = world
     runtime = Runtime(deployment, pin)
-    runtime.propose("shop/api", "tx-q", artifact(6), intent="quarantine", **WINDOW)
+    runtime.propose(
+        "shop/api", "tx-q", artifact(6), intent="quarantine", expect=expect_of(artifact(6)), **WINDOW
+    )
     for step in (runtime.approve, runtime.freeze, runtime.baseline, runtime.bind):
         step("tx-q")
     intent = runtime.begin_intent("tx-q")

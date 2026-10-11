@@ -32,15 +32,48 @@ def artifact(answer, other="stable"):
 
 
 CHECKS = [
-    {"id": "primary", "kind": "primary", "phase": "instant", "mandatory": True,
-     "probe": {"type": "http-json", "path": "/answer", "pointer": "/answer", "artifact_pointer": "/routes/~1answer/answer"}},
-    {"id": "protected-config", "kind": "invariant", "phase": "window", "mandatory": True,
-     "probe": {"type": "http-unchanged", "path": "/config"}},
-    {"id": "protected-other", "kind": "invariant", "phase": "window", "mandatory": True,
-     "probe": {"type": "http-unchanged", "path": "/other"}},
-    {"id": "deployment", "kind": "deployment", "phase": "instant", "mandatory": True, "probe": {"type": "active-artifact"}},
-    {"id": "stage", "kind": "stage", "phase": "instant", "mandatory": True, "probe": {"type": "artifact-bytes"}},
-    {"id": "baseline", "kind": "baseline", "phase": "instant", "mandatory": True, "probe": {"type": "baseline-custody"}},
+    {
+        "id": "primary",
+        "kind": "primary",
+        "phase": "instant",
+        "mandatory": True,
+        "probe": {"type": "http-json", "path": "/answer", "pointer": "/answer"},
+    },
+    {
+        "id": "protected-config",
+        "kind": "invariant",
+        "phase": "window",
+        "mandatory": True,
+        "probe": {"type": "http-unchanged", "path": "/config"},
+    },
+    {
+        "id": "protected-other",
+        "kind": "invariant",
+        "phase": "window",
+        "mandatory": True,
+        "probe": {"type": "http-unchanged", "path": "/other"},
+    },
+    {
+        "id": "deployment",
+        "kind": "deployment",
+        "phase": "instant",
+        "mandatory": True,
+        "probe": {"type": "active-artifact"},
+    },
+    {
+        "id": "stage",
+        "kind": "stage",
+        "phase": "instant",
+        "mandatory": True,
+        "probe": {"type": "artifact-bytes"},
+    },
+    {
+        "id": "baseline",
+        "kind": "baseline",
+        "phase": "instant",
+        "mandatory": True,
+        "probe": {"type": "baseline-custody"},
+    },
 ]
 
 
@@ -133,11 +166,20 @@ def main():
 
     import closure_engine
     from closure_engine.runtime import (
-        ROLES, Deployment, ReferenceTarget, ReferenceTargetServer, Runtime, enroll, enroll_target, init_identity,
+        ROLES,
+        Deployment,
+        ReferenceTarget,
+        ReferenceTargetServer,
+        Runtime,
+        enroll,
+        enroll_target,
+        init_identity,
     )
 
     stop_at = time.time() + 600
-    burners = [multiprocessing.Process(target=burn, args=(stop_at,), daemon=True) for _ in range(args.burners)]
+    burners = [
+        multiprocessing.Process(target=burn, args=(stop_at,), daemon=True) for _ in range(args.burners)
+    ]
     for p in burners:
         p.start()
     work = Path(tempfile.mkdtemp(prefix="ace-diag-"))
@@ -153,10 +195,23 @@ def main():
     server = ReferenceTargetServer(("127.0.0.1", port), work / "target")
     threading.Thread(target=server.serve_forever, daemon=True).start()
     runtime = Runtime(deployment, pin)
-    options = dict(duration_ms=args.duration_ms, min_samples=3, max_clock_skew_ms=args.skew_ms, settle_ms=args.settle_ms)
+    options = dict(
+        duration_ms=args.duration_ms, min_samples=3, max_clock_skew_ms=args.skew_ms, settle_ms=args.settle_ms
+    )
     parent_steps, child_steps = [], []
-    lifecycle(runtime, "tx-bad", parent_steps,
-              lambda: runtime.propose("shop/api", "tx-bad", artifact(3, other="CHANGED"), intent="diag", **options))
+    lifecycle(
+        runtime,
+        "tx-bad",
+        parent_steps,
+        lambda: runtime.propose(
+            "shop/api",
+            "tx-bad",
+            artifact(3, other="CHANGED"),
+            intent="diag",
+            expect={"primary": 3},
+            **options,
+        ),
+    )
     runtime.begin_recovery("tx-bad")
     child = lifecycle(runtime, "tx-bad/recovery", child_steps)
     receipt = {
@@ -172,8 +227,15 @@ def main():
         "child_verdict": child.get("verdict"),
     }
     Path(args.output).write_text(json.dumps(receipt, indent=2, sort_keys=True))
-    print(json.dumps({"child_verdict": receipt["child_verdict"], "late": receipt["child"]["late_first_window_sample"],
-                      "ledger_events": receipt["ledger_events"]}))
+    print(
+        json.dumps(
+            {
+                "child_verdict": receipt["child_verdict"],
+                "late": receipt["child"]["late_first_window_sample"],
+                "ledger_events": receipt["ledger_events"],
+            }
+        )
+    )
     server.shutdown()
     for p in burners:
         p.terminate()

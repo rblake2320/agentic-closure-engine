@@ -17,6 +17,7 @@ from ..crypto import sign, verify
 from ..ledger import Ledger
 from ..protocol import POLICY_HASH, ClosureError, digest, strict_loads, validate
 from ..store import EvidenceStore
+from . import evaluator
 from .clock import SystemClock
 from .deployment import slug
 from .files import create_json, read_json, replace_json
@@ -237,6 +238,10 @@ class LocalCustody:
             if digest(self.store.get(proposal["current_baseline_hash"])) != contract["baseline_hash"]:
                 raise ClosureError("BASELINE_EVIDENCE_MISSING")
             self.store.get(proposal["artifact_hash"])
+            # The evaluator bundle the owner will approve must exist and use the enrolled profile.
+            evaluator.load(
+                self.store, contract["evaluator_hash"], self.deployment.target(proposal["target_id"])
+            )
             if type(proposal["settle_ms"]) is not int or not 0 <= proposal["settle_ms"] <= 600_000:
                 raise ClosureError("INVALID_PROPOSAL")
             if self._path(tx).exists():

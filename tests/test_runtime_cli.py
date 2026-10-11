@@ -19,7 +19,6 @@ CHECKS = [
             "type": "http-json",
             "path": "/answer",
             "pointer": "/answer",
-            "artifact_pointer": "/routes/~1answer/answer",
         },
     },
     {
@@ -149,6 +148,8 @@ def test_cli_lifecycle_is_proven_and_independently_verifiable(product):
         pin,
         "propose",
         t,
+        "--expect",
+        "primary=2",
         "--target",
         "shop/api",
         "--artifact",

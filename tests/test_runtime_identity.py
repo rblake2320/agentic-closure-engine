@@ -20,7 +20,7 @@ PROBE_CHECKS = [
         "kind": "primary",
         "phase": "instant",
         "mandatory": True,
-        "probe": {"type": "http-json", "path": "/a", "pointer": "/a", "artifact_pointer": "/a"},
+        "probe": {"type": "http-json", "path": "/a", "pointer": "/a"},
     }
 ]
 

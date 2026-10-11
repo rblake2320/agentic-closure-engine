@@ -94,6 +94,12 @@ def register(sub):
     p.add_argument("--target", help="propose: enrolled target id")
     p.add_argument("--artifact", help="propose: artifact file to deploy")
     p.add_argument("--intent", help="propose: human-readable intent")
+    p.add_argument(
+        "--expect",
+        action="append",
+        default=[],
+        help="propose: CHECK=JSON owner-approved desired value for a primary check (repeat)",
+    )
     p.add_argument("--duration-ms", type=int, default=60_000)
     p.add_argument("--min-samples", type=int, default=3)
     p.add_argument("--skew-ms", type=int, default=2_000)
@@ -288,6 +294,19 @@ def _read_json_file(path):
         raise ClosureError("INPUT_MISSING", str(path)) from exc
 
 
+def _expectations(values):
+    expect = {}
+    for item in values:
+        check_id, sep, raw = item.partition("=")
+        if not sep or not check_id or check_id in expect:
+            raise ClosureError("INVALID_EXPECTATION", item)
+        try:
+            expect[check_id] = strict_loads(raw.encode())
+        except ClosureError as exc:
+            raise ClosureError("INVALID_EXPECTATION", item) from exc
+    return expect
+
+
 def _runtime(args):
     if not args.expected_trust_hash:
         raise ClosureError("TRUST_ANCHOR_REQUIRED")
@@ -309,6 +328,7 @@ def _tx(args):
             tx,
             artifact_bytes(args.artifact),
             intent=args.intent,
+            expect=_expectations(args.expect),
             duration_ms=args.duration_ms,
             min_samples=args.min_samples,
             max_clock_skew_ms=args.skew_ms,

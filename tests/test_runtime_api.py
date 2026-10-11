@@ -101,6 +101,7 @@ def test_role_gating_and_no_caller_clock(api):
         "target_id": "shop/api",
         "transaction_id": "api-1",
         "artifact_base64": base64.b64encode(artifact(2)).decode(),
+        "expect": {"primary": 2},
         "intent": "API change",
     }
     status, value = call(api, "POST", "/api/v1/transactions", body, VIEWER)
@@ -118,6 +119,7 @@ def test_full_transaction_through_api(api):
         "target_id": "shop/api",
         "transaction_id": "api-release/7",
         "artifact_base64": base64.b64encode(artifact(7)).decode(),
+        "expect": {"primary": 7},
         "intent": "Release seven",
         "duration_ms": WINDOW["duration_ms"],
         "min_samples": WINDOW["min_samples"],
@@ -174,6 +176,7 @@ def test_status_lists_staged_proposals_as_unapproved_without_verdict(api):
         "target_id": "shop/api",
         "transaction_id": "staged-1",
         "artifact_base64": base64.b64encode(artifact(11)).decode(),
+        "expect": {"primary": 11},
         "intent": "Staged only",
     }
     assert call(api, "POST", "/api/v1/transactions", body, RELEASE)[0] == 201
@@ -203,6 +206,7 @@ def test_owner_can_review_exact_draft_contract_before_approval(api):
         "target_id": "shop/api",
         "transaction_id": "review-1",
         "artifact_base64": base64.b64encode(artifact(12)).decode(),
+        "expect": {"primary": 12},
         "intent": "Reviewable change",
     }
     created = call(api, "POST", "/api/v1/transactions", body, RELEASE)[1]

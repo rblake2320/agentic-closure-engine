@@ -119,7 +119,8 @@ def enroll_target(deployment, target_id, base_url, checks, *, timeout_ms=5000):
     """Operator: enroll one HTTP target and its probe profile; issue the broker's deploy credential.
 
     ``checks`` is a list of {id, kind, phase, mandatory, probe}. The canonical profile digest
-    becomes the contract evaluator_hash, so verifiers refuse any other probe definitions.
+    is embedded in every transaction's evaluator bundle, so verifiers refuse any other probe
+    definitions.
     Returns the credential hash the target must be configured with; the secret itself is only
     written to the broker's private state root.
     """
@@ -153,9 +154,10 @@ def enroll_target(deployment, target_id, base_url, checks, *, timeout_ms=5000):
             ):
                 raise ClosureError("INVALID_TARGET_PROBE", check["id"])
         if probe["type"] == "http-json":
-            pointers = (probe.get("pointer"), probe.get("artifact_pointer"))
-            if set(probe) != {"type", "path", "pointer", "artifact_pointer"} or not all(
-                isinstance(x, str) and x.startswith("/") for x in pointers
+            # The expected value is never taken from the artifact: it is an owner-approved run
+            # criterion frozen in the evaluator bundle (see runtime/evaluator.py).
+            if set(probe) != {"type", "path", "pointer"} or not (
+                isinstance(probe["pointer"], str) and probe["pointer"].startswith("/")
             ):
                 raise ClosureError("INVALID_TARGET_PROBE", check["id"])
         elif probe["type"] == "http-unchanged":
@@ -179,6 +181,6 @@ def enroll_target(deployment, target_id, base_url, checks, *, timeout_ms=5000):
     create_exclusive(deployment.target_token_path(target_id), token.encode(), private=True)
     return {
         "target_id": target_id,
-        "evaluator_hash": digest(profile),
+        "profile_hash": digest(profile),
         "deploy_token_sha256": profile["deploy_token_sha256"],
     }

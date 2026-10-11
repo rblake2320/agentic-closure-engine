@@ -204,6 +204,7 @@ def proposal(tx, raw):
         "target_id": "shop/api",
         "transaction_id": tx,
         "artifact_base64": base64.b64encode(raw).decode(),
+        "expect": {"primary": json.loads(raw)["routes"]["/answer"]["answer"]},
         "intent": "isolated release",
         "duration_ms": WINDOW["duration_ms"],
         "min_samples": WINDOW["min_samples"],

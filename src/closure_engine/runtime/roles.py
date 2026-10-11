@@ -24,6 +24,7 @@ ROLE_ACTIONS = {
     "broker": {"deploy": "deploy", "start-execution": "start_execution", "reconcile": "reconcile"},
 }
 PROPOSE_OPTIONS = {
+    "expect",
     "duration_ms",
     "min_samples",
     "max_clock_skew_ms",
@@ -54,7 +55,10 @@ def propose_args(body):
     except (ValueError, TypeError) as exc:
         raise ClosureError("ARTIFACT_ENCODING_INVALID") from exc
     options = {k: body[k] for k in PROPOSE_OPTIONS if k in body}
-    if any(type(v) is not int for v in options.values()) or not isinstance(body["intent"], str):
+    numbers = {k: v for k, v in options.items() if k != "expect"}
+    if "expect" in options and not isinstance(options["expect"], dict):
+        raise ClosureError("INVALID_REQUEST")
+    if any(type(v) is not int for v in numbers.values()) or not isinstance(body["intent"], str):
         raise ClosureError("INVALID_REQUEST")
     return body["target_id"], body["transaction_id"], artifact, body["intent"], options
 
@@ -209,14 +213,9 @@ class DistributedRuntime:
     def contract(self, tx):
         """Read-only: the exact draft contract (and approval, once signed) for owner review."""
         meta = self.custody.tx(tx)
-        return {
-            "transaction_id": tx,
-            "contract_hash": digest(meta["contract"]),
-            "contract": meta["contract"],
-            "approval": meta["approval"],
-            "artifact_hash": meta["artifact_hash"],
-            "parent_transaction": meta["parent_transaction"],
-        }
+        from .service import contract_view
+
+        return contract_view(self.custody, meta)
 
     def closure(self, tx):
         """CIP envelope with the ledger's authoritative technical packet (never a candidate)."""

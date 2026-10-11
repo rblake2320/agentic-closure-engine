@@ -27,6 +27,7 @@ from ..protocol import (
 )
 from ..recovery import recovery_status
 from ..verdicts import close_run
+from . import evaluator
 from .clock import SystemClock
 from .custody import LocalCustody
 from .deployment import Deployment
@@ -126,10 +127,16 @@ class Runtime:
         recovery_deadline_ms=600_000,
         repo_id="ace/runtime",
         allowed_changes=("artifact",),
+        expect=None,
         parent=None,
         parent_transaction=None,
     ):
-        """Actor: stage the artifact and draft a contract from the enrolled target profile."""
+        """Actor: stage the artifact and draft a contract from the enrolled target profile.
+
+        ``expect`` maps each primary check id to the owner's desired JSON value. The value the
+        target serves today is read as the restoration criterion. Both are frozen into the
+        evaluator bundle the owner approves; the verifier confirms the current value at baseline.
+        """
         self._identity("actor")
         artifact = _bounded_bytes(artifact)
         if self.custody.exists(transaction_id):
@@ -142,6 +149,18 @@ class Runtime:
         current = client.artifact()
         if digest(current) != state["artifact_hash"]:
             raise ClosureError("TARGET_STATE_INCONSISTENT")
+        if parent is None:
+            restore = {}
+            for check in evaluator.criteria_checks(profile):
+                status, raw = client.get(check["probe"]["path"])
+                if status != 200:
+                    raise ClosureError("PRIMARY_UNAVAILABLE", check["id"])
+                restore[check["id"]] = json_pointer(strict_loads(raw), check["probe"]["pointer"])
+            bundle_hash = self.store.put(canonical(evaluator.build(profile, expect, restore)))
+        else:
+            if expect is not None:
+                raise ClosureError("RECOVERY_CRITERIA_ARE_INHERITED")
+            bundle_hash = parent["evaluator_hash"]
         verifier = self._issuer("verifier")
         checks = [
             {
@@ -169,7 +188,7 @@ class Runtime:
             "allowed_changes": list(allowed_changes),
             "protected_resources": [c["id"] for c in checks if c["kind"] == "invariant"],
             "allowed_actions": ["deploy"],
-            "evaluator_hash": digest(profile),
+            "evaluator_hash": bundle_hash,
             "policy_hash": POLICY_HASH,
             "trust_hash": self.trust.hash,
             "deadline_at": timestamp(now + deadline_ms),
@@ -365,10 +384,25 @@ class Runtime:
         state = client.state()
         if state["artifact_hash"] != contract["baseline_hash"]:
             raise ClosureError("BASELINE_PRECONDITION_FAILED", state["artifact_hash"])
+        bundle = self._evaluator(meta)
         if meta["parent_transaction"] is not None:
             # Recovery restores the parent's protected state, not today's possibly damaged state.
             protected = self.custody.manifest(meta["parent_transaction"])["protected"]
         else:
+            # Independently confirm the owner-approved restoration value is what is live now.
+            for check in evaluator.criteria_checks(bundle["profile"]):
+                status, raw = client.get(check["probe"]["path"])
+                try:
+                    live = (
+                        json_pointer(strict_loads(raw), check["probe"]["pointer"]) if status == 200 else None
+                    )
+                except ClosureError:
+                    live = None
+                restore = bundle["criteria"][check["id"]]["restore_equals"]
+                if status != 200 or canonical(live) != canonical(restore):
+                    raise ClosureError(
+                        "BASELINE_PRECONDITION_FAILED", "primary value differs from approved baseline"
+                    )
             protected = {}
             for check in self._profile(meta["target_id"])["checks"]:
                 if check["kind"] == "invariant":
@@ -382,7 +416,12 @@ class Runtime:
         self._append("verifier", tx, "BASELINED", refs=[manifest])
         return self.status(tx)
 
-    def _probe(self, check, meta, binding, client, artifact_doc):
+    def _evaluator(self, meta):
+        return evaluator.load(
+            self.store, meta["contract"]["evaluator_hash"], self._profile(meta["target_id"])
+        )
+
+    def _probe(self, check, meta, binding, client, bundle):
         probe = check["probe"]
         contract = meta["contract"]
         try:
@@ -404,18 +443,21 @@ class Runtime:
                 return ("PASS" if status == 200 and digest(raw) == expected else "FAIL"), raw
             if status != 200:
                 return "FAIL", raw
+            criterion = bundle["criteria"][check["id"]]
+            # Recovery is judged against the value observed before the change; forward runs
+            # against the owner's desired value. Never against the actor's artifact.
+            wanted = criterion["restore_equals"] if contract["parent_packet_hash"] else criterion["equals"]
             try:
                 live = json_pointer(strict_loads(raw), probe["pointer"])
-                wanted = json_pointer(artifact_doc, probe["artifact_pointer"])
             except ClosureError:
                 return "FAIL", raw
             return ("PASS" if canonical(live) == canonical(wanted) else "FAIL"), raw
         except ClosureError as exc:
             return "UNKNOWN", canonical({"probe_error": exc.code})
 
-    def _observe_one(self, verifier, meta, binding, check, nonce, client, artifact_doc):
+    def _observe_one(self, verifier, meta, binding, check, nonce, client, bundle):
         observed_at = self.clock.now()
-        result, raw = self._probe(check, meta, binding, client, artifact_doc)
+        result, raw = self._probe(check, meta, binding, client, bundle)
         body = {
             "observation_id": "obs-" + secrets.token_hex(12),
             **{k: binding[k] for k in SUBJECT},
@@ -444,15 +486,10 @@ class Runtime:
         meta = self._tx(tx)
         if meta["binding"] is None:
             raise ClosureError("RUN_BINDING_REQUIRED", tx)
-        profile = self._profile(meta["target_id"])
-        if digest(profile) != meta["contract"]["evaluator_hash"]:
-            raise ClosureError("EVALUATOR_MISMATCH", meta["target_id"])
+        bundle = self._evaluator(meta)  # refuses if the enrolled probe profile changed
+        profile = bundle["profile"]
         binding = meta["binding"]["payload"]["body"]
         client = self._client(meta["target_id"])
-        try:
-            artifact_doc = strict_loads(self.store.get(binding["artifact_hash"]))
-        except ClosureError:
-            artifact_doc = None
         checks = {c["id"]: c for c in profile["checks"]}
         used = {r["observation"]["payload"]["body"]["nonce"] for r in self.custody.records(tx)}
         pending = [c for c in binding["challenges"] if c["nonce"] not in used]
@@ -462,7 +499,7 @@ class Runtime:
         def observe_instant(challenge):
             check = checks[challenge["check_id"]]
             results.append(
-                self._observe_one(verifier, meta, binding, check, challenge["nonce"], client, artifact_doc)
+                self._observe_one(verifier, meta, binding, check, challenge["nonce"], client, bundle)
             )
 
         if phase in {"all", "window"}:
@@ -495,7 +532,7 @@ class Runtime:
                     if nonces:
                         results.append(
                             self._observe_one(
-                                verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc
+                                verifier, meta, binding, checks[check_id], nonces.pop(0), client, bundle
                             )
                         )
         for challenge in instants:  # instant checks have no window constraint, only freshness
@@ -659,14 +696,7 @@ class Runtime:
     def contract(self, tx):
         """Read-only: the exact draft contract (and approval, once signed) for owner review."""
         meta = self.custody.tx(tx)
-        return {
-            "transaction_id": tx,
-            "contract_hash": digest(meta["contract"]),
-            "contract": meta["contract"],
-            "approval": meta["approval"],
-            "artifact_hash": meta["artifact_hash"],
-            "parent_transaction": meta["parent_transaction"],
-        }
+        return contract_view(self.custody, meta)
 
     def closure(self, tx):
         """CIP envelope with the ledger's authoritative technical packet (never a candidate)."""
@@ -725,3 +755,18 @@ def artifact_bytes(path):
     except FileNotFoundError as exc:
         raise ClosureError("ARTIFACT_MISSING", str(path)) from exc
     return _bounded_bytes(raw)
+
+
+def contract_view(custody, meta):
+    """Everything the owner approves, in readable form: contract plus evaluator criteria."""
+    contract = meta["contract"]
+    bundle = strict_loads(custody.store.get(contract["evaluator_hash"]))
+    return {
+        "transaction_id": meta["transaction_id"],
+        "contract_hash": digest(contract),
+        "contract": contract,
+        "evaluator": bundle,
+        "approval": meta["approval"],
+        "artifact_hash": meta["artifact_hash"],
+        "parent_transaction": meta["parent_transaction"],
+    }

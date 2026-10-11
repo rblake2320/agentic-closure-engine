@@ -52,6 +52,7 @@ def release(port, tx, raw):
         "target_id": "shop/api",
         "transaction_id": tx,
         "artifact_base64": base64.b64encode(raw).decode(),
+        "expect": {"primary": json.loads(raw)["routes"]["/answer"]["answer"]},
         "intent": "export test",
         **{k: WINDOW[k] for k in ("duration_ms", "min_samples", "settle_ms")},
         "max_clock_skew_ms": WINDOW["max_clock_skew_ms"],
