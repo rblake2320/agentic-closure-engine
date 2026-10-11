@@ -4,11 +4,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'physical-path.ps1')
 $backupDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $keyDirectory = [IO.Path]::GetFullPath($KeyDirectory)
-if ($keyDirectory.StartsWith($backupDirectory.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase) -or $keyDirectory -eq $backupDirectory) {
-    throw 'Keep the decryption key in a separate operator-controlled directory outside the archive directory.'
-}
+Assert-SeparateBackupKey $backupDirectory $keyDirectory
 if (Test-Path -LiteralPath $backupDirectory) { throw 'Choose a new private backup directory; existing backups are never replaced.' }
 New-Item -ItemType Directory -Path $backupDirectory | Out-Null
 if (Test-Path -LiteralPath $keyDirectory) { throw 'Choose a new separate key directory; existing keys are never replaced.' }

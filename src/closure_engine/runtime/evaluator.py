@@ -11,7 +11,9 @@ The contract's evaluator_hash is digest(bundle), so the owner's approval signs t
 values. The verifier fetches the bundle by that digest, requires its profile to equal the
 operator-enrolled profile, and judges primary checks against these constants - never against
 anything the actor's artifact asserts. Recovery transactions inherit the parent's bundle and are
-judged against ``restore_equals``; the verifier confirms that value live before any deployment.
+judged against ``restore_equals`` during recovery observation. Forward baselining confirms that
+the pre-change value still matches ``restore_equals`` before deployment; recovery baselining
+retains the parent's protected-state manifest for subsequent restoration checks.
 """
 
 from ..protocol import ClosureError, canonical, digest, strict_loads

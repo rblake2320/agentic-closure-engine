@@ -11,12 +11,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'physical-path.ps1')
 $backup = (Resolve-Path -LiteralPath $BackupDirectory).Path
 $keyFile = (Resolve-Path -LiteralPath $KeyFile).Path
 $checkpointFile = (Resolve-Path -LiteralPath $ExpectedCheckpointFile).Path
-if ($keyFile.StartsWith($backup.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The decryption key must be supplied from separate storage.'
-}
+Assert-SeparateBackupKey $backup $keyFile
 if ((Get-FileHash -LiteralPath (Join-Path $backup 'snapshot.ace')).Hash -ne $ExpectedArchiveHash) { throw 'Archive differs from its independently retained digest.' }
 if ($DeploymentName -eq 'agentic-closure-engine') { throw 'Restore into a new deployment name; existing production data is never overwritten.' }
 $runtime = Join-Path $projectRoot ".recovered/$DeploymentName"

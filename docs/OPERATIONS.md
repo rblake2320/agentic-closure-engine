@@ -86,6 +86,8 @@ COMPLETE is written last. There is no atomic rename across separate Docker volum
 Staging uses tmpfs, so killed staging containers do not retain plaintext keys on a scratch disk.
 Startup refuses another active deployment with the same signing enrollment. Stop the original
 authority before activating restored keys; never operate two independent ledgers with them.
+Use `tools/start-product.ps1` for every start; direct Compose invocation bypasses the host
+single-authority check. Do not configure another restored authority to start automatically.
 
 ## Independent replay and AWL
 

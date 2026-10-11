@@ -1,4 +1,4 @@
-"""Build a wheel, install into a fresh environment, and retain offline acceptance receipts."""
+"""Build an ACE wheel and retain installed kernel/runtime checks and legacy CLI controls."""
 
 import argparse
 import hashlib
@@ -234,8 +234,10 @@ def main():
     (out / "sbom.json").write_text(json.dumps(sbom, indent=2), encoding="utf-8")
     suites = list(ET.parse(out / "tests.xml").getroot().iter("testsuite"))
     receipt = {
-        "scope": "Phase 0 offline kernel; synthetic deployment records; real crypto, artifact "
-        "and ledger I/O; real subprocess interruption",
+        "scope": "Installed ACE kernel and shipped runtime suite: real cryptography, filesystem, "
+        "ledger, HTTP target, authenticated services and subprocess checks",
+        "cli_scenario_scope": "Legacy synthetic evidence controls; real crypto and ledger I/O. "
+        "Live deployment and Docker recovery receipts are retained separately.",
         "wheel": wheel.name,
         "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
         "installed_origin": origin,

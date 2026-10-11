@@ -74,7 +74,7 @@ try {
     $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
     do {
         try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:$ConsolePort/" -TimeoutSec 2
+            $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$ConsolePort/" -TimeoutSec 2
             if ($response.StatusCode -eq 200 -and $response.Content.Contains('Agentic Closure Engine')) {
                 Write-Output "ACE: http://127.0.0.1:$ConsolePort/"
                 Write-Output "Operator token file: $runtime\operator.token"
