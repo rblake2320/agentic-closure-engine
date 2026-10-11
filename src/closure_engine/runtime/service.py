@@ -1,24 +1,20 @@
 """Operating runtime facade: drives real transactions through the deterministic kernel.
 
-Verdicts come only from ``verdicts.close_run`` and admission only from ``Ledger``; this module
-performs the role work around them (approval, binding, brokered deployment, independent
-observation, custody, recovery) and never evaluates outcomes itself.
+Verdicts come only from ``verdicts.close_run`` and admission only from ``Ledger`` (inside
+custody); this module performs each role's work and never evaluates outcomes itself.
 
-Custody layout (custodian state root):
-  ledger.sqlite, evidence/, checkpoint.json (latest signed head),
-  transactions/<slug>.json (contract, approval, binding, metadata),
-  records/<slug>/<hash>.json (ingested observation records), receipts/<slug>/<hash>.json
-Broker layout: intents/<intent>.json write-ahead records, targets/<slug>.token deploy credential.
+Each method uses exactly one role key, loaded from that role's own state root. The facade talks
+to custody through a custody object: ``LocalCustody`` in one process, or ``RemoteCustody``
+when every role runs as its own service and only custody holds the custodian key.
+Broker-private state: intents/<intent>.json write-ahead records, targets/<slug>.token.
 """
 
-import copy
 import secrets
 import time
 from pathlib import Path
 
 from ..contracts import freeze
 from ..crypto import sign
-from ..ledger import Ledger
 from ..protocol import (
     MAX_BYTES,
     POLICY_HASH,
@@ -30,14 +26,14 @@ from ..protocol import (
     timestamp,
 )
 from ..recovery import recovery_status
-from ..store import EvidenceStore
 from ..verdicts import close_run
 from .clock import SystemClock
-from .deployment import Deployment, slug
+from .custody import LocalCustody
+from .deployment import Deployment
 from .files import create_json, read_json, replace_json
 from .target import TargetClient, json_pointer
 
-VERDICTS = {"PROVEN", "DISPROVEN", "PARTIALLY_PROVEN", "INDETERMINATE"}
+SUBJECT = ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
 
 
 def _bounded_bytes(raw, code="ARTIFACT_INVALID"):
@@ -47,45 +43,31 @@ def _bounded_bytes(raw, code="ARTIFACT_INVALID"):
 
 
 class Runtime:
-    def __init__(self, root, expected_trust_hash, *, clock=None, role_roots=None):
+    def __init__(self, root, expected_trust_hash, *, clock=None, role_roots=None, custody=None):
         self.deployment = root if isinstance(root, Deployment) else Deployment(root, role_roots)
         self.trust = self.deployment.load_trust(expected_trust_hash)
         self.clock = clock or SystemClock()
-        self.custody = self.deployment.role_root("custodian")
-        self._ledger = None
-        self._store = None
+        self.custody = (
+            custody if custody is not None else LocalCustody(self.deployment, self.trust, self.clock)
+        )
 
-    # ----- custody -------------------------------------------------------------------------
     @property
     def store(self):
-        if self._store is None:
-            self._store = EvidenceStore(self.custody / "evidence")
-        return self._store
+        return self.custody.store
 
-    @property
-    def ledger(self):
-        if self._ledger is None:
-            path = self.custody / "ledger.sqlite"
-            checkpoint = None
-            if path.exists():
-                checkpoint = read_json(self.custody / "checkpoint.json", "CHECKPOINT_MISSING")
-            self._ledger = Ledger(path, self.trust, self.store, checkpoint=checkpoint)
-        return self._ledger
-
+    # ----- helpers -------------------------------------------------------------------------
     def _identity(self, role):
         return self.deployment.identity(role, self.trust)
 
-    def _tx_path(self, tx):
-        return self.custody / "transactions" / (slug(tx) + ".json")
+    def _issuer(self, role):
+        """Issuer of the enrolled key for ``role`` (public enrollment; no private key needed)."""
+        issuers = [k["issuer"] for k in self.trust.data["keys"] if k["role"] == role]
+        if len(issuers) != 1:
+            raise ClosureError("ROLE_NOT_ENROLLED", role)
+        return issuers[0]
 
     def _tx(self, tx):
-        meta = read_json(self._tx_path(tx), "TRANSACTION_UNKNOWN")
-        if meta.get("transaction_id") != tx:
-            raise ClosureError("TRANSACTION_STORAGE_MISMATCH", tx)
-        return meta
-
-    def _save_tx(self, meta):
-        replace_json(self._tx_path(meta["transaction_id"]), meta)
+        return self.custody.tx(tx)
 
     def _frozen(self, meta):
         return freeze(meta["contract"], meta["approval"], self.trust)
@@ -93,7 +75,7 @@ class Runtime:
     def _append(self, role, tx, state, **fields):
         identity = self._identity(role)
         meta = self._tx(tx)
-        head, sequence = self.ledger.position
+        head, sequence = self.custody.position()
         body = {
             "event_id": "evt-" + secrets.token_hex(12),
             "transaction_id": tx,
@@ -109,53 +91,8 @@ class Runtime:
             "recovery_approval": fields.get("recovery_approval"),
             "risk": None,
         }
-        event = sign(identity, "ledger-event", body, self.clock.now())
-        self.ledger.append(event, head)
-        self._checkpoint()
-        return event
+        return self.custody.append(sign(identity, "ledger-event", body, self.clock.now()), head)
 
-    def _checkpoint(self):
-        checkpoint = self.ledger.checkpoint(self._identity("custodian"), self.clock.now())
-        replace_json(self.custody / "checkpoint.json", checkpoint)
-        return checkpoint
-
-    def checkpoint(self):
-        """Signed head for export to independent custody (store it outside this deployment)."""
-        return self._checkpoint()
-
-    def _records(self, kind, tx):
-        folder = self.custody / kind / slug(tx)
-        if not folder.is_dir():
-            return []
-        items = []
-        for path in sorted(folder.glob("*.json")):
-            value = read_json(path, "CUSTODY_RECORD_MISSING")
-            if digest(value) != path.stem.replace("sha256-", "sha256:"):
-                raise ClosureError("CUSTODY_RECORD_TAMPERED", str(path))
-            items.append(value)
-        return items
-
-    def _submit(self, kind, tx, value):
-        path = self.custody / kind / slug(tx) / (digest(value).replace(":", "-") + ".json")
-        if not path.exists():
-            create_json(path, value)
-        return digest(value)
-
-    def ingest(self, tx, observation):
-        """Custodian: timestamp an observation with the service clock and retain it."""
-        record = {
-            "observation": observation,
-            "ingestion": sign(
-                self._identity("custodian"),
-                "ingestion",
-                {"envelope_hash": digest(observation), "received_at": self.clock.now()},
-                self.clock.now(),
-            ),
-        }
-        self._submit("records", tx, record)
-        return record
-
-    # ----- target --------------------------------------------------------------------------
     def _profile(self, target_id):
         return self.deployment.target(target_id)
 
@@ -169,7 +106,11 @@ class Runtime:
                 raise ClosureError("DEPLOY_CREDENTIAL_MISSING", target_id) from exc
         return TargetClient(self._profile(target_id), token)
 
-    # ----- transaction lifecycle -----------------------------------------------------------
+    def checkpoint(self):
+        """Signed head for export to independent custody (store it outside this deployment)."""
+        return self.custody.checkpoint()
+
+    # ----- actor ---------------------------------------------------------------------------
     def propose(
         self,
         target_id,
@@ -186,23 +127,22 @@ class Runtime:
         repo_id="ace/runtime",
         allowed_changes=("artifact",),
         parent=None,
+        parent_transaction=None,
     ):
         """Actor: stage the artifact and draft a contract from the enrolled target profile."""
         self._identity("actor")
         artifact = _bounded_bytes(artifact)
-        if self._tx_path(transaction_id).exists():
+        if self.custody.exists(transaction_id):
             raise ClosureError("TRANSACTION_ALREADY_EXISTS", transaction_id)
+        if type(min_samples) is not int or min_samples < 2:
+            raise ClosureError("INVALID_WINDOW")
         profile = self._profile(target_id)
         client = self._client(target_id)
         state = client.state()
         current = client.artifact()
         if digest(current) != state["artifact_hash"]:
             raise ClosureError("TARGET_STATE_INCONSISTENT")
-        if parent is None and digest(artifact) == state["artifact_hash"]:
-            raise ClosureError("ARTIFACT_ALREADY_ACTIVE")
-        if min_samples < 2:
-            raise ClosureError("INVALID_WINDOW")
-        verifier = self._identity_public("verifier")
+        verifier = self._issuer("verifier")
         checks = [
             {
                 "id": c["id"],
@@ -246,90 +186,74 @@ class Runtime:
         }
         if parent is not None:
             contract.update(parent)
-        meta = {
+        proposal = {
             "transaction_id": transaction_id,
             "target_id": target_id,
             "contract": contract,
-            "approval": None,
             "artifact_hash": self.store.put(artifact),
             "current_baseline_hash": self.store.put(current),
             "settle_ms": settle_ms,
-            "binding": None,
-            "manifest_hash": None,
-            "packets": [],
-            "parent_transaction": None,
-            "child_transaction": None,
         }
-        create_json(self._tx_path(transaction_id), meta)
-        return {"transaction_id": transaction_id, "contract_hash": digest(contract), "state": "PROPOSED"}
+        return self.custody.create_tx(proposal, parent_transaction)
 
-    def _identity_public(self, role):
-        """Issuer of the enrolled key for ``role`` (from public enrollment, no private key needed)."""
-        issuers = [k["issuer"] for k in self.trust.data["keys"] if k["role"] == role]
-        if len(issuers) != 1:
-            raise ClosureError("ROLE_NOT_ENROLLED", role)
-        return issuers[0]
-
-    def approve(self, tx):
-        """Owner: sign the exact contract hash, register it, record DRAFT and APPROVED."""
+    def begin_recovery(self, tx):
+        """Actor: draft the child transaction that restores the parent's baseline artifact."""
         meta = self._tx(tx)
-        if meta["approval"] is not None:
-            raise ClosureError("ALREADY_APPROVED", tx)
+        packet = meta.get("verdict_packet")
+        if self.custody.state(tx) != "RECOVERY_REQUIRED" or packet is None:
+            raise ClosureError("RECOVERY_NOT_REQUIRED", str(self.custody.state(tx)))
+        parent_contract = meta["contract"]
+        window = parent_contract["window"]
+        inherited = {
+            "checks": [dict(c) for c in parent_contract["checks"]],
+            "protected_resources": list(parent_contract["protected_resources"]),
+            "window": dict(window),
+            "evaluator_hash": parent_contract["evaluator_hash"],
+            "parent_packet_hash": digest(packet),
+            "intent": "Restore baseline after " + packet["payload"]["body"]["verdict"] + " for " + tx,
+        }
+        return self.propose(
+            meta["target_id"],
+            tx + "/recovery",
+            self.store.get(parent_contract["baseline_hash"]),
+            intent=inherited["intent"],
+            duration_ms=window["duration_ms"],
+            min_samples=window["min_samples"],
+            max_clock_skew_ms=window["max_clock_skew_ms"],
+            settle_ms=meta["settle_ms"],
+            parent=inherited,
+            parent_transaction=tx,
+        )
+
+    # ----- owner ---------------------------------------------------------------------------
+    def approve(self, tx):
+        """Owner: sign the exact contract hash; custody registers it; record DRAFT and APPROVED."""
+        meta = self._tx(tx)
         body = {
             "contract_hash": digest(meta["contract"]),
             "trust_hash": self.trust.hash,
             "policy_hash": POLICY_HASH,
         }
-        meta["approval"] = sign(self._identity("owner"), "approval", body, self.clock.now())
-        frozen = self._frozen(meta)
-        self._save_tx(meta)
-        self.ledger.register(frozen)
+        approval = sign(self._identity("owner"), "approval", body, self.clock.now())
+        self.custody.set_approval(tx, approval)
         self._append("owner", tx, "DRAFT")
         self._append("owner", tx, "APPROVED")
         return self.status(tx)
 
+    def accept(self, tx):
+        """Owner: separate acceptance of a PROVEN technical verdict."""
+        self._append("owner", tx, "ACCEPTED")
+        return self.status(tx)
+
+    # ----- authority -----------------------------------------------------------------------
     def freeze(self, tx):
-        """Authority: freeze the approved contract."""
         self._frozen(self._tx(tx))
         self._append("authority", tx, "FROZEN")
         return self.status(tx)
 
-    def baseline(self, tx):
-        """Verifier: read the target's current protected state and retain it in custody."""
-        meta = self._tx(tx)
-        contract = meta["contract"]
-        client = self._client(meta["target_id"])
-        state = client.state()
-        if state["artifact_hash"] != contract["baseline_hash"]:
-            raise ClosureError("BASELINE_PRECONDITION_FAILED", state["artifact_hash"])
-        if digest(self.store.get(meta["current_baseline_hash"])) != contract["baseline_hash"]:
-            raise ClosureError("BASELINE_EVIDENCE_MISSING")
-        if meta["parent_transaction"] is not None:
-            # Recovery restores the parent's protected state, not today's possibly damaged state.
-            parent = self._tx(meta["parent_transaction"])
-            protected = strict_loads(self.store.get(parent["manifest_hash"]))["protected"]
-        else:
-            profile = self._profile(meta["target_id"])
-            protected = {}
-            for check in profile["checks"]:
-                if check["kind"] == "invariant":
-                    status, raw = client.get(check["probe"]["path"])
-                    if status != 200:
-                        raise ClosureError("PROTECTED_RESOURCE_UNAVAILABLE", check["id"])
-                    protected[check["id"]] = self.store.put(raw)
-        manifest = self.store.put(
-            canonical({"artifact_hash": contract["baseline_hash"], "protected": protected})
-        )
-        meta["manifest_hash"] = manifest
-        self._save_tx(meta)
-        self._append("verifier", tx, "BASELINED", refs=[manifest])
-        return self.status(tx)
-
     def bind(self, tx):
-        """Authority: issue the run binding (artifact, challenges, window start); broker records EXECUTING."""
+        """Authority: issue the run binding (artifact, challenges, window start)."""
         meta = self._tx(tx)
-        if meta["binding"] is not None:
-            raise ClosureError("RUN_ALREADY_BOUND", tx)
         contract = meta["contract"]
         now = self.clock.now_ms()
         challenges = []
@@ -348,19 +272,222 @@ class Runtime:
             "window_start": timestamp(now + meta["settle_ms"]),
             "challenges": challenges,
         }
-        meta["binding"] = sign(self._identity("authority"), "run-binding", body, timestamp(now))
-        self._save_tx(meta)
-        self._append("broker", tx, "EXECUTING", binding=meta["binding"])
+        binding = sign(self._identity("authority"), "run-binding", body, timestamp(now))
+        self.custody.set_binding(tx, binding)
+        return dict(self.status(tx), binding_hash=digest(binding))
+
+    def _close_packet(self, meta, now_ms):
+        return close_run(
+            frozen=self._frozen(meta),
+            binding=meta["binding"],
+            records=self.custody.records(meta["transaction_id"]),
+            receipts=self.custody.receipts(meta["transaction_id"]),
+            store=self.store,
+            trust=self.trust,
+            now=now_ms,
+            authority=self._identity("authority"),
+            ledger_head=self.custody.position()[0],
+        )
+
+    def close(self, tx):
+        """Authority: deterministic evaluation via close_run; append exactly what it decided."""
+        meta = self._tx(tx)
+        state = self.custody.state(tx)
+        if meta["binding"] is None or state not in {"EXECUTING", "VERIFYING", "OBSERVING"}:
+            raise ClosureError("NOT_CLOSABLE", str(state))
+        contract = meta["contract"]
+        window_end = (
+            milliseconds(meta["binding"]["payload"]["body"]["window_start"])
+            + contract["window"]["duration_ms"]
+        )
+        if state == "VERIFYING":
+            packet = self._close_packet(meta, self.clock.now_ms())
+            body = packet["payload"]["body"]
+            instant = [c["id"] for c in contract["checks"] if c["mandatory"] and c["phase"] == "instant"]
+            if all(body["checks"].get(c) == "PASS" for c in instant) and body["verdict"] != "DISPROVEN":
+                self._append("authority", tx, "OBSERVING", packet=packet)
+                if self.clock.now_ms() < window_end:
+                    return dict(self.status(tx), immediate=body["checks"])
+                return self._record_verdict(tx, self._close_packet(self._tx(tx), self.clock.now_ms()))
+            return self._record_verdict(tx, packet)
+        if state == "OBSERVING" and self.clock.now_ms() < window_end:
+            raise ClosureError("OBSERVATION_WINDOW_OPEN", timestamp(window_end))
+        return self._record_verdict(tx, self._close_packet(meta, self.clock.now_ms()))
+
+    def _record_verdict(self, tx, packet):
+        body = packet["payload"]["body"]
+        self._append("authority", tx, body["verdict"], packet=packet)
+        if body["recovery_required"]:
+            self._append("authority", tx, "RECOVERY_REQUIRED")
+        return dict(
+            self.status(tx),
+            verdict=body["verdict"],
+            reason_codes=body["reason_codes"],
+            packet_hash=digest(packet),
+        )
+
+    def complete_recovery(self, tx):
+        """Authority: submit the closed child packet; the kernel decides RECOVERED/FAILED."""
+        meta = self._tx(tx)
+        child = self._tx(meta["child_transaction"]) if meta.get("child_transaction") else {}
+        packet = child.get("verdict_packet")
+        status = recovery_status(
+            meta["verdict_packet"],
+            self._frozen(child) if packet else None,
+            packet,
+            self.trust,
+            self.clock.now_ms(),
+            meta["contract"]["recovery"]["deadline_ms"],
+            store=self.store,
+        )
+        if status["state"] == "RECOVERY_REQUIRED":
+            return dict(self.status(tx), recovery=status)
+        self._append(
+            "authority",
+            tx,
+            status["state"],
+            packet=packet,
+            recovery_contract=child["contract"] if packet else None,
+            recovery_approval=child["approval"] if packet else None,
+        )
+        return dict(self.status(tx), recovery=status)
+
+    # ----- verifier ------------------------------------------------------------------------
+    def baseline(self, tx):
+        """Verifier: read the target's current protected state and retain it in custody."""
+        self._identity("verifier")
+        meta = self._tx(tx)
+        contract = meta["contract"]
+        client = self._client(meta["target_id"])
+        state = client.state()
+        if state["artifact_hash"] != contract["baseline_hash"]:
+            raise ClosureError("BASELINE_PRECONDITION_FAILED", state["artifact_hash"])
+        if meta["parent_transaction"] is not None:
+            # Recovery restores the parent's protected state, not today's possibly damaged state.
+            protected = self.custody.manifest(meta["parent_transaction"])["protected"]
+        else:
+            protected = {}
+            for check in self._profile(meta["target_id"])["checks"]:
+                if check["kind"] == "invariant":
+                    status, raw = client.get(check["probe"]["path"])
+                    if status != 200:
+                        raise ClosureError("PROTECTED_RESOURCE_UNAVAILABLE", check["id"])
+                    protected[check["id"]] = self.store.put(raw)
+        manifest = self.store.put(
+            canonical({"artifact_hash": contract["baseline_hash"], "protected": protected})
+        )
+        self._append("verifier", tx, "BASELINED", refs=[manifest])
         return self.status(tx)
 
-    def deploy(self, tx):
-        """Bind (if needed), then the broker's precondition-checked, write-ahead deployment."""
-        if self._tx(tx)["binding"] is None:
-            self.bind(tx)
-        if self.ledger.state(tx) != "EXECUTING" or self._intents(tx):
-            raise ClosureError("DEPLOYMENT_ALREADY_ATTEMPTED", tx)
-        intent = self.begin_intent(tx)
-        return self.execute_intent(intent["intent_id"])
+    def _probe(self, check, meta, binding, client, artifact_doc):
+        probe = check["probe"]
+        contract = meta["contract"]
+        try:
+            if probe["type"] == "active-artifact":
+                raw = canonical(client.state())
+                active = strict_loads(raw)["artifact_hash"]
+                if active == binding["artifact_hash"]:
+                    return "PASS", raw
+                return ("NOT_COMPLETED" if active == contract["baseline_hash"] else "FAIL"), raw
+            if probe["type"] == "artifact-bytes":
+                raw = client.artifact()
+                return ("PASS" if digest(raw) == binding["artifact_hash"] else "FAIL"), raw
+            if probe["type"] == "baseline-custody":
+                raw = self.store.get(meta["current_baseline_hash"])
+                return ("PASS" if digest(raw) == contract["baseline_hash"] else "FAIL"), raw
+            status, raw = client.get(probe["path"])
+            if probe["type"] == "http-unchanged":
+                expected = self.custody.manifest(meta["transaction_id"])["protected"][check["id"]]
+                return ("PASS" if status == 200 and digest(raw) == expected else "FAIL"), raw
+            if status != 200:
+                return "FAIL", raw
+            try:
+                live = json_pointer(strict_loads(raw), probe["pointer"])
+                wanted = json_pointer(artifact_doc, probe["artifact_pointer"])
+            except ClosureError:
+                return "FAIL", raw
+            return ("PASS" if canonical(live) == canonical(wanted) else "FAIL"), raw
+        except ClosureError as exc:
+            return "UNKNOWN", canonical({"probe_error": exc.code})
+
+    def _observe_one(self, verifier, meta, binding, check, nonce, client, artifact_doc):
+        observed_at = self.clock.now()
+        result, raw = self._probe(check, meta, binding, client, artifact_doc)
+        body = {
+            "observation_id": "obs-" + secrets.token_hex(12),
+            **{k: binding[k] for k in SUBJECT},
+            "check_id": check["id"],
+            "evaluator_hash": meta["contract"]["evaluator_hash"],
+            "policy_hash": POLICY_HASH,
+            "nonce": nonce,
+            "phase": check["phase"],
+            "observed_at": observed_at,
+            "result": result,
+            "evidence_hash": self.store.put(raw),
+            "tamper_detected": False,
+        }
+        if check["kind"] == "baseline":
+            body["artifact_hash"] = meta["contract"]["baseline_hash"]
+        self.custody.ingest(meta["transaction_id"], sign(verifier, "observation", body, observed_at))
+        return {"check_id": check["id"], "result": result, "observed_at": observed_at}
+
+    def observe(self, tx, *, phase="all"):
+        """Verifier: independent read-only probes bound to the authority's challenges.
+
+        Instant checks are observed once; window checks are sampled across the frozen window,
+        so this call blocks until the window closes when phase is 'all' or 'window'.
+        """
+        verifier = self._identity("verifier")
+        meta = self._tx(tx)
+        if meta["binding"] is None:
+            raise ClosureError("RUN_BINDING_REQUIRED", tx)
+        profile = self._profile(meta["target_id"])
+        if digest(profile) != meta["contract"]["evaluator_hash"]:
+            raise ClosureError("EVALUATOR_MISMATCH", meta["target_id"])
+        binding = meta["binding"]["payload"]["body"]
+        client = self._client(meta["target_id"])
+        try:
+            artifact_doc = strict_loads(self.store.get(binding["artifact_hash"]))
+        except ClosureError:
+            artifact_doc = None
+        checks = {c["id"]: c for c in profile["checks"]}
+        used = {r["observation"]["payload"]["body"]["nonce"] for r in self.custody.records(tx)}
+        pending = [c for c in binding["challenges"] if c["nonce"] not in used]
+        results = []
+        if phase in {"all", "instant"}:
+            for challenge in [c for c in pending if c["phase"] == "instant"]:
+                check = checks[challenge["check_id"]]
+                results.append(
+                    self._observe_one(
+                        verifier, meta, binding, check, challenge["nonce"], client, artifact_doc
+                    )
+                )
+        if phase in {"all", "window"}:
+            window = meta["contract"]["window"]
+            start = milliseconds(binding["window_start"])
+            by_check = {}
+            for challenge in [c for c in pending if c["phase"] == "window"]:
+                by_check.setdefault(challenge["check_id"], []).append(challenge["nonce"])
+            consumed = window["min_samples"] - max((len(v) for v in by_check.values()), default=0)
+            # The last sample lands inside the window, within the clock-skew allowance of its end.
+            span = window["duration_ms"] - window["max_clock_skew_ms"] // 2
+            for index in range(consumed, window["min_samples"]):
+                due = start + (index * span) // (window["min_samples"] - 1)
+                delay = due - self.clock.now_ms()
+                if delay > 0:
+                    time.sleep(delay / 1000)
+                for check_id, nonces in by_check.items():
+                    if nonces:
+                        results.append(
+                            self._observe_one(
+                                verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc
+                            )
+                        )
+            # Return only once the frozen window has closed, so the authority can close at once.
+            remaining = start + window["duration_ms"] - self.clock.now_ms()
+            if remaining > 0:
+                time.sleep(remaining / 1000)
+        return {"transaction_id": tx, "observations": results}
 
     # ----- broker: write-ahead intent, side effect, reconciliation -------------------------
     def _intent_path(self, intent_id):
@@ -373,12 +500,28 @@ class Runtime:
         found = [read_json(path, "INTENT_UNKNOWN") for path in sorted(folder.glob("intent-*.json"))]
         return [i for i in found if i["transaction_id"] == tx]
 
+    def start_execution(self, tx):
+        """Broker: record EXECUTING with the binding the authority issued (custody checks it)."""
+        meta = self._tx(tx)
+        if meta["binding"] is None:
+            if meta["pending_binding"] is None:
+                raise ClosureError("RUN_BINDING_REQUIRED", tx)
+            self._append("broker", tx, "EXECUTING", binding=meta["pending_binding"])
+        return self.status(tx)
+
+    def deploy(self, tx):
+        """Broker: precondition-checked, write-ahead deployment of the bound artifact."""
+        self.start_execution(tx)
+        if self.custody.state(tx) != "EXECUTING" or self._intents(tx):
+            raise ClosureError("DEPLOYMENT_ALREADY_ATTEMPTED", tx)
+        intent = self.begin_intent(tx)
+        return self.execute_intent(intent["intent_id"])
+
     def begin_intent(self, tx):
         """Broker: verify the precondition and durably record intent BEFORE any side effect."""
         self._identity("broker")
+        self.start_execution(tx)
         meta = self._tx(tx)
-        if meta["binding"] is None:
-            raise ClosureError("RUN_BINDING_REQUIRED", tx)
         state = self._client(meta["target_id"]).state()
         intent = {
             "intent_id": "intent-" + secrets.token_hex(12),
@@ -440,25 +583,17 @@ class Runtime:
         return {"reconciled": results}
 
     def _finish_intent(self, intent, status):
-        meta = self._tx(intent["transaction_id"])
-        binding = meta["binding"]["payload"]["body"]
+        binding = self._tx(intent["transaction_id"])["binding"]["payload"]["body"]
         now = self.clock.now()
-        receipt = sign(
-            self._identity("broker"),
-            "action-receipt",
-            {
-                "receipt_id": intent["intent_id"],
-                **{
-                    k: binding[k]
-                    for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
-                },
-                "operation": "deploy",
-                "status": status,
-                "recorded_at": now,
-            },
-            now,
-        )
-        receipt_hash = self._submit("receipts", intent["transaction_id"], receipt)
+        body = {
+            "receipt_id": intent["intent_id"],
+            **{k: binding[k] for k in SUBJECT},
+            "operation": "deploy",
+            "status": status,
+            "recorded_at": now,
+        }
+        receipt = sign(self._identity("broker"), "action-receipt", body, now)
+        receipt_hash = self.custody.submit_receipt(intent["transaction_id"], receipt)["receipt_hash"]
         if status != "UNKNOWN":
             self._append("broker", intent["transaction_id"], "VERIFYING", receipt=receipt)
         final = "QUARANTINED" if status == "UNKNOWN" else "COMPLETED"
@@ -472,186 +607,12 @@ class Runtime:
             "receipt_hash": receipt_hash,
         }
 
-    # ----- verifier ------------------------------------------------------------------------
-    def _probe(self, check, meta, binding, client, artifact_doc):
-        probe = check["probe"]
-        contract = meta["contract"]
-        try:
-            if probe["type"] == "active-artifact":
-                raw = canonical(client.state())
-                active = strict_loads(raw)["artifact_hash"]
-                if active == binding["artifact_hash"]:
-                    return "PASS", raw
-                return ("NOT_COMPLETED" if active == contract["baseline_hash"] else "FAIL"), raw
-            if probe["type"] == "artifact-bytes":
-                raw = client.artifact()
-                return ("PASS" if digest(raw) == binding["artifact_hash"] else "FAIL"), raw
-            if probe["type"] == "baseline-custody":
-                raw = self.store.get(meta["current_baseline_hash"])
-                return ("PASS" if digest(raw) == contract["baseline_hash"] else "FAIL"), raw
-            status, raw = client.get(probe["path"])
-            if probe["type"] == "http-unchanged":
-                expected = strict_loads(self.store.get(meta["manifest_hash"]))["protected"][check["id"]]
-                return ("PASS" if status == 200 and digest(raw) == expected else "FAIL"), raw
-            if status != 200:
-                return "FAIL", raw
-            try:
-                live = json_pointer(strict_loads(raw), probe["pointer"])
-                wanted = json_pointer(artifact_doc, probe["artifact_pointer"])
-            except ClosureError:
-                return "FAIL", raw
-            return ("PASS" if canonical(live) == canonical(wanted) else "FAIL"), raw
-        except ClosureError as exc:
-            return "UNKNOWN", canonical({"probe_error": exc.code})
-
-    def _observe_one(self, verifier, meta, binding, check, nonce, client, artifact_doc):
-        observed_at = self.clock.now()
-        result, raw = self._probe(check, meta, binding, client, artifact_doc)
-        evidence = self.store.put(raw)
-        contract = meta["contract"]
-        body = {
-            "observation_id": "obs-" + secrets.token_hex(12),
-            **{
-                k: binding[k]
-                for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
-            },
-            "check_id": check["id"],
-            "evaluator_hash": contract["evaluator_hash"],
-            "policy_hash": POLICY_HASH,
-            "nonce": nonce,
-            "phase": check["phase"],
-            "observed_at": observed_at,
-            "result": result,
-            "evidence_hash": evidence,
-            "tamper_detected": False,
-        }
-        if check["kind"] == "baseline":
-            body["artifact_hash"] = contract["baseline_hash"]
-        observation = sign(verifier, "observation", body, body["observed_at"])
-        self.ingest(meta["transaction_id"], observation)
-        return {"check_id": check["id"], "result": result, "observed_at": body["observed_at"]}
-
-    def observe(self, tx, *, phase="all"):
-        """Verifier: independent read-only probes bound to the authority's challenges.
-
-        Instant checks are observed once; window checks are sampled across the frozen window,
-        so this call blocks until the window closes when phase is 'all' or 'window'.
-        """
-        verifier = self._identity("verifier")
-        meta = self._tx(tx)
-        if meta["binding"] is None:
-            raise ClosureError("RUN_BINDING_REQUIRED", tx)
-        profile = self._profile(meta["target_id"])
-        if digest(profile) != meta["contract"]["evaluator_hash"]:
-            raise ClosureError("EVALUATOR_MISMATCH", meta["target_id"])
-        binding = meta["binding"]["payload"]["body"]
-        client = self._client(meta["target_id"])
-        try:
-            artifact_doc = strict_loads(self.store.get(binding["artifact_hash"]))
-        except ClosureError:
-            artifact_doc = None
-        checks = {c["id"]: c for c in profile["checks"]}
-        used = {r["observation"]["payload"]["body"]["nonce"] for r in self._records("records", tx)}
-        pending = [c for c in binding["challenges"] if c["nonce"] not in used]
-        results = []
-        if phase in {"all", "instant"}:
-            for challenge in [c for c in pending if c["phase"] == "instant"]:
-                check = checks[challenge["check_id"]]
-                results.append(
-                    self._observe_one(
-                        verifier, meta, binding, check, challenge["nonce"], client, artifact_doc
-                    )
-                )
-        if phase in {"all", "window"}:
-            window = meta["contract"]["window"]
-            start = milliseconds(binding["window_start"])
-            by_check = {}
-            for challenge in [c for c in pending if c["phase"] == "window"]:
-                by_check.setdefault(challenge["check_id"], []).append(challenge["nonce"])
-            consumed = window["min_samples"] - max((len(v) for v in by_check.values()), default=0)
-            # Last sample lands inside the window, within the clock-skew allowance of its end.
-            span = window["duration_ms"] - window["max_clock_skew_ms"] // 2
-            for index in range(consumed, window["min_samples"]):
-                due = start + (index * span) // (window["min_samples"] - 1)
-                delay = due - self.clock.now_ms()
-                if delay > 0:
-                    time.sleep(delay / 1000)
-                for check_id, nonces in by_check.items():
-                    if nonces:
-                        results.append(
-                            self._observe_one(
-                                verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc
-                            )
-                        )
-            # Return only once the frozen window has closed, so the authority can close at once.
-            remaining = start + window["duration_ms"] - self.clock.now_ms()
-            if remaining > 0:
-                time.sleep(remaining / 1000)
-        return {"transaction_id": tx, "observations": results}
-
-    # ----- authority -----------------------------------------------------------------------
-    def _close_packet(self, meta, now_ms):
-        return close_run(
-            frozen=self._frozen(meta),
-            binding=meta["binding"],
-            records=self._records("records", meta["transaction_id"]),
-            receipts=self._records("receipts", meta["transaction_id"]),
-            store=self.store,
-            trust=self.trust,
-            now=now_ms,
-            authority=self._identity("authority"),
-            ledger_head=self.ledger.position[0],
-        )
-
-    def close(self, tx):
-        """Authority: deterministic evaluation via close_run; append exactly what it decided."""
-        meta = self._tx(tx)
-        state = self.ledger.state(tx)
-        if meta["binding"] is None or state not in {"EXECUTING", "VERIFYING", "OBSERVING"}:
-            raise ClosureError("NOT_CLOSABLE", str(state))
-        contract = meta["contract"]
-        window_end = (
-            milliseconds(meta["binding"]["payload"]["body"]["window_start"])
-            + contract["window"]["duration_ms"]
-        )
-        if state == "VERIFYING":
-            packet = self._close_packet(meta, self.clock.now_ms())
-            body = packet["payload"]["body"]
-            instant = [c["id"] for c in contract["checks"] if c["mandatory"] and c["phase"] == "instant"]
-            if all(body["checks"].get(c) == "PASS" for c in instant) and body["verdict"] != "DISPROVEN":
-                self._append("authority", tx, "OBSERVING", packet=packet)
-                meta["packets"].append(digest(packet))
-                self._save_tx(meta)
-                if self.clock.now_ms() < window_end:
-                    return dict(self.status(tx), immediate=body["checks"])
-                # Window already complete: evaluate the final verdict now.
-                return self._record_verdict(tx, meta, self._close_packet(meta, self.clock.now_ms()))
-            return self._record_verdict(tx, meta, packet)
-        if self.clock.now_ms() < window_end and state == "OBSERVING":
-            raise ClosureError("OBSERVATION_WINDOW_OPEN", timestamp(window_end))
-        return self._record_verdict(tx, meta, self._close_packet(meta, self.clock.now_ms()))
-
-    def _record_verdict(self, tx, meta, packet):
-        body = packet["payload"]["body"]
-        self._append("authority", tx, body["verdict"], packet=packet)
-        meta["packets"].append(digest(packet))
-        meta["verdict_packet"] = packet
-        self._save_tx(meta)
-        if body["recovery_required"]:
-            self._append("authority", tx, "RECOVERY_REQUIRED")
-        return dict(
-            self.status(tx),
-            verdict=body["verdict"],
-            reason_codes=body["reason_codes"],
-            packet_hash=digest(packet),
-        )
-
+    # ----- single-process orchestration (development and single-host installs) -------------
     def run(self, tx):
-        """Broker deploy, then verifier observation across the whole window, then authority close.
-
-        One call keeps the verifier on schedule for the frozen window (its first sample must
-        fall within the clock-skew allowance of the window start).
-        """
+        """Bind, deploy, observe across the whole window, close. Requires every role key locally;
+        in an isolated deployment the operator API performs the same steps via role services."""
+        if self._tx(tx)["binding"] is None and self._tx(tx)["pending_binding"] is None:
+            self.bind(tx)
         deployed = self.deploy(tx)
         if deployed.get("receipt") == "UNKNOWN":
             return dict(self.status(tx), deployment=deployed)
@@ -661,83 +622,9 @@ class Runtime:
             result = self.close(tx)
         return dict(result, deployment=deployed, observations=len(observed["observations"]))
 
-    def accept(self, tx):
-        """Owner: separate acceptance of a PROVEN technical verdict."""
-        self._append("owner", tx, "ACCEPTED")
-        return self.status(tx)
-
-    # ----- recovery ------------------------------------------------------------------------
-    def begin_recovery(self, tx):
-        """Actor: draft the child transaction restoring the parent's baseline artifact."""
-        meta = self._tx(tx)
-        if self.ledger.state(tx) != "RECOVERY_REQUIRED":
-            raise ClosureError("RECOVERY_NOT_REQUIRED", str(self.ledger.state(tx)))
-        if meta.get("child_transaction"):
-            raise ClosureError("RECOVERY_ALREADY_STARTED", meta["child_transaction"])
-        parent_packet = meta["verdict_packet"]
-        parent_contract = meta["contract"]
-        child_tx = tx + "/recovery"
-        baseline_bytes = self.store.get(parent_contract["baseline_hash"])
-        window = parent_contract["window"]
-        inherited = {
-            "checks": copy.deepcopy(parent_contract["checks"]),
-            "protected_resources": list(parent_contract["protected_resources"]),
-            "window": dict(window),
-            "evaluator_hash": parent_contract["evaluator_hash"],
-            "parent_packet_hash": digest(parent_packet),
-            "intent": "Restore baseline after " + parent_packet["payload"]["body"]["verdict"] + " for " + tx,
-        }
-        result = self.propose(
-            meta["target_id"],
-            child_tx,
-            baseline_bytes,
-            intent=inherited["intent"],
-            duration_ms=window["duration_ms"],
-            min_samples=window["min_samples"],
-            max_clock_skew_ms=window["max_clock_skew_ms"],
-            settle_ms=meta["settle_ms"],
-            parent=inherited,
-        )
-        child = self._tx(child_tx)
-        if child["contract"]["baseline_hash"] != parent_packet["payload"]["body"]["artifact_hash"]:
-            self._tx_path(child_tx).unlink()
-            raise ClosureError("RECOVERY_PRECONDITION_MISMATCH")
-        child["parent_transaction"] = tx
-        self._save_tx(child)
-        meta["child_transaction"] = child_tx
-        self._save_tx(meta)
-        return result
-
-    def complete_recovery(self, tx):
-        """Authority: submit the closed child packet; the kernel decides RECOVERED/FAILED."""
-        meta = self._tx(tx)
-        child = self._tx(meta["child_transaction"]) if meta.get("child_transaction") else {}
-        packet = child.get("verdict_packet")
-        frozen = self._frozen(child) if packet else None
-        status = recovery_status(
-            meta["verdict_packet"],
-            frozen,
-            packet,
-            self.trust,
-            self.clock.now_ms(),
-            meta["contract"]["recovery"]["deadline_ms"],
-            store=self.store,
-        )
-        if status["state"] == "RECOVERY_REQUIRED":
-            return dict(self.status(tx), recovery=status)
-        self._append(
-            "authority",
-            tx,
-            status["state"],
-            packet=packet,
-            recovery_contract=child["contract"] if packet else None,
-            recovery_approval=child["approval"] if packet else None,
-        )
-        return dict(self.status(tx), recovery=status)
-
     # ----- read models ---------------------------------------------------------------------
     def status(self, tx=None):
-        summary = self.ledger.summary()
+        summary = self.custody.summary()
         if tx is None:
             return summary
         meta = self._tx(tx)
@@ -766,8 +653,8 @@ class Runtime:
             "contract": meta["contract"],
             "approval": meta["approval"],
             "binding": meta["binding"],
-            "records": self._records("records", tx),
-            "receipts": self._records("receipts", tx),
+            "records": self.custody.records(tx),
+            "receipts": self.custody.receipts(tx),
         }
 
 

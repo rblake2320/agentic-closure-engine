@@ -13,9 +13,12 @@ from pathlib import Path
 from ..protocol import ClosureError, canonical, strict_loads
 from .api import ROLES as API_ROLES
 from .api import ApiServer, load_credentials, load_credentials_value
+from .custody import LocalCustody
+from .custody_service import CustodyServer, RemoteCustody
 from .deployment import Deployment, enroll, enroll_target
 from .files import create_exclusive, replace_json
 from .identities import ROLES, init_identity
+from .roles import ROLE_ACTIONS, DistributedRuntime, RoleServer
 from .service import Runtime, artifact_bytes
 from .target import ReferenceTarget, ReferenceTargetServer
 
@@ -37,7 +40,10 @@ TX_ACTIONS = (
 )
 COMMANDS = {
     "api-credential",
+    "api-revoke",
     "api-serve",
+    "custody-serve",
+    "role-serve",
     "init",
     "enroll",
     "target-enroll",
@@ -105,26 +111,59 @@ def register(sub):
     register_api(sub)
 
 
+def _service_args(parser, default_port=None):
+    parser.add_argument("--bind", default="127.0.0.1", help="Listen address (container: 0.0.0.0)")
+    parser.add_argument("--port", type=int, required=default_port is None, default=default_port)
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        help="Exact host:port clients use (repeat). Required when --bind is not loopback.",
+    )
+    parser.add_argument(
+        "--credentials", required=True, help="Credentials directory (live reload, mount read-only) or file"
+    )
+
+
 def register_api(sub):
     p = sub.add_parser(
-        "api-credential", help="Issue an API bearer token into a private file; stores only its hash"
+        "api-credential", help="Issue a bearer token into a new private file; stores only its hash"
     )
-    p.add_argument("--credentials", required=True, help="Credentials file (sha256 -> principal)")
+    p.add_argument("--credentials", required=True, help="Credentials directory or file (sha256 -> principal)")
     p.add_argument("--principal", required=True)
     p.add_argument("--role", action="append", required=True, choices=sorted(API_ROLES))
     p.add_argument("--token-out", required=True, help="New private file that receives the token")
-    p = sub.add_parser("api-serve", help="Authenticated loopback JSON API for the operator UI")
-    _pin(p)
+    p = sub.add_parser(
+        "api-revoke", help="Revoke a bearer token by its sha256 (effective on the next request)"
+    )
     p.add_argument("--credentials", required=True)
-    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--token-sha256", required=True)
+    p = sub.add_parser("api-serve", help="Operator JSON API for the UI (single-host or keyless gateway)")
+    p.add_argument("--deployment", help="Single-host mode: deployment root holding role keys")
+    p.add_argument("--expected-trust-hash", default=os.environ.get("ACE_EXPECTED_TRUST_HASH"))
+    p.add_argument("--services", help="Keyless gateway mode: JSON file naming role services and custody")
     p.add_argument("--static-dir", help="Same-origin UI files")
+    _service_args(p)
+    p = sub.add_parser("custody-serve", help="Protected custody service (holds only the custodian key)")
+    _pin(p)
+    _service_args(p)
+    p = sub.add_parser("role-serve", help="One role service (holds only that role's key)")
+    _pin(p)
+    p.add_argument("--role", required=True, choices=sorted(ROLE_ACTIONS))
+    p.add_argument("--custody-url", required=True)
+    p.add_argument("--custody-token-file", required=True)
+    _service_args(p)
+
+
+def _credentials_file(path):
+    path = Path(path)
+    return path / "credentials.json" if path.is_dir() else path
 
 
 def _issue_credential(args):
     import hashlib
     import secrets
 
-    path = Path(args.credentials)
+    path = _credentials_file(args.credentials)
     existing = strict_loads(path.read_bytes()) if path.exists() else {}
     token = secrets.token_urlsafe(32)
     create_exclusive(args.token_out, token.encode(), private=True)
@@ -140,16 +179,101 @@ def _issue_credential(args):
     }
 
 
-def _serve_api(args):
-    runtime = _runtime(args)
-    server = ApiServer(("127.0.0.1", args.port), runtime, load_credentials(args.credentials), args.static_dir)
-    print(json.dumps({"service": "ace-runtime-api", "port": server.server_address[1]}), flush=True)
+def _revoke_credential(args):
+    path = _credentials_file(args.credentials)
+    existing = strict_loads(path.read_bytes())
+    if args.token_sha256 not in existing:
+        raise ClosureError("CREDENTIAL_UNKNOWN")
+    revoked = existing.pop(args.token_sha256)
+    if not existing:
+        raise ClosureError("LAST_CREDENTIAL_REVOCATION_REFUSED")
+    replace_json(path, existing)  # atomic rename; directory mounts see it on the next request
+    return {"revoked": args.token_sha256, "principal": revoked["principal"]}
+
+
+def _read_token(path):
+    try:
+        token = Path(path).read_bytes().decode().strip()
+    except FileNotFoundError as exc:
+        raise ClosureError("TOKEN_FILE_MISSING", str(path)) from exc
+    if len(token) < 32:
+        raise ClosureError("TOKEN_INVALID", str(path))
+    return token
+
+
+def _serve(server, name):
+    print(
+        json.dumps({"service": name, "bind": server.server_address[0], "port": server.server_address[1]}),
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+def _serve_api(args):
+    if (args.services is None) == (args.deployment is None):
+        raise ClosureError("API_MODE_REQUIRED", "use exactly one of --deployment or --services")
+    if args.services is not None:
+        config = _read_json_file(args.services)
+        if not isinstance(config, dict) or set(config) != set(ROLE_ACTIONS) | {"custody"}:
+            raise ClosureError("SERVICES_CONFIG_INVALID")
+        services = {
+            role: (config[role]["url"], _read_token(config[role]["token_file"])) for role in ROLE_ACTIONS
+        }
+        runtime = DistributedRuntime(
+            services, config["custody"]["url"], _read_token(config["custody"]["token_file"])
+        )
+    else:
+        runtime = _runtime(args)
+    server = ApiServer(
+        (args.bind, args.port),
+        runtime,
+        load_credentials(args.credentials),
+        args.static_dir,
+        hosts=args.allowed_host,
+    )
+    _serve(server, "ace-runtime-api")
+
+
+def _serve_custody(args):
+    deployment, trust = _deployment_trust(args)
+    custody = LocalCustody(deployment, trust)
+    deployment.identity("custodian", trust)  # refuse to start without the enrolled custodian key
+    server = CustodyServer(
+        (args.bind, args.port),
+        custody,
+        hosts=args.allowed_host,
+        credentials=load_credentials(args.credentials),
+    )
+    _serve(server, "ace-custody")
+
+
+def _serve_role(args):
+    deployment, _ = _deployment_trust(args)
+    custody = RemoteCustody(args.custody_url, _read_token(args.custody_token_file))
+    runtime = Runtime(deployment, args.expected_trust_hash, custody=custody)
+    server = RoleServer(
+        (args.bind, args.port),
+        args.role,
+        runtime,
+        hosts=args.allowed_host,
+        credentials=load_credentials(args.credentials),
+    )
+    _serve(server, "ace-role-" + args.role)
+
+
+def _deployment_trust(args):
+    if not args.expected_trust_hash:
+        raise ClosureError("TRUST_ANCHOR_REQUIRED")
+    root = Path(args.deployment)
+    if not root.is_dir():
+        raise ClosureError("DEPLOYMENT_MISSING", str(root))
+    deployment = Deployment(root)
+    return deployment, deployment.load_trust(args.expected_trust_hash)
 
 
 def _read_json_file(path):
@@ -209,6 +333,12 @@ def dispatch(args):
         return _issue_credential(args)
     if args.command == "api-serve":
         return _serve_api(args)
+    if args.command == "api-revoke":
+        return _revoke_credential(args)
+    if args.command == "custody-serve":
+        return _serve_custody(args)
+    if args.command == "role-serve":
+        return _serve_role(args)
     if args.command == "init":
         deployment = Deployment(args.deployment)
         return init_identity(deployment.role_root(args.role), args.role, args.issuer)

@@ -69,7 +69,7 @@ CHECKS = [
         "probe": {"type": "baseline-custody"},
     },
 ]
-WINDOW = {"duration_ms": 3000, "min_samples": 3, "max_clock_skew_ms": 1000, "settle_ms": 1500}
+WINDOW = {"duration_ms": 3000, "min_samples": 3, "max_clock_skew_ms": 1000, "settle_ms": 2500}
 
 
 def artifact(answer, other="stable"):
@@ -114,12 +114,12 @@ def run_to_verdict(runtime, tx, raw):
     runtime.approve(tx)
     runtime.freeze(tx)
     runtime.baseline(tx)
+    runtime.bind(tx)
     deployed = runtime.deploy(tx)
-    runtime.observe(tx, phase="instant")
+    runtime.observe(tx, phase="all")
     first = runtime.close(tx)
     if first["state"] != "OBSERVING":
         return deployed, first
-    runtime.observe(tx, phase="window")
     return deployed, runtime.close(tx)
 
 
@@ -160,12 +160,12 @@ def run_to_verdict_child(runtime, tx):
     runtime.approve(tx)
     runtime.freeze(tx)
     runtime.baseline(tx)
+    runtime.bind(tx)
     deployed = runtime.deploy(tx)
-    runtime.observe(tx, phase="instant")
+    runtime.observe(tx, phase="all")
     first = runtime.close(tx)
     if first["state"] != "OBSERVING":
         return deployed, first
-    runtime.observe(tx, phase="window")
     return deployed, runtime.close(tx)
 
 
@@ -180,6 +180,7 @@ def test_concurrent_change_blocks_deploy_without_side_effect(world):
     token = deployment.target_token_path("shop/api").read_bytes().decode()
     other = TargetClient(deployment.target("shop/api"), token)
     assert other.deploy(artifact(9), digest(artifact(1)), "external-change")[0] == 200
+    runtime.bind("tx-race")
     result = runtime.deploy("tx-race")
     assert result["receipt"] == "NOT_DEPLOYED"
     assert other.state()["artifact_hash"] == digest(artifact(9))  # newer state not clobbered
