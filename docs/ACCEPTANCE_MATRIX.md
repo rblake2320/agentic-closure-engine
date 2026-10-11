@@ -12,6 +12,9 @@ Use one bounded contract with a primary check and at least two mandatory invaria
 | A04 | Primary passes, mandatory protected invariant fails | DISPROVEN regardless of other successful checks |
 | A05 | Patch stage verified and authenticated NOT_DEPLOYED receipt; applicable invariants pass | PARTIALLY_PROVEN |
 | A06 | Patch verified but deployment receipt/observation absent | INDETERMINATE, never partial by inference |
+| A05b | Policy v3, primary opted in: target refuses the change, authenticated NOT_DEPLOYED, deployment NOT_COMPLETED, baseline read-back PASS, primary NOT_COMPLETED, invariants PASS | PARTIALLY_PROVEN (tests/test_partial_policy.py, tests/test_runtime_failure_matrix.py) |
+| A05c | Policy v3 opt-in but receipt EXECUTED/UNKNOWN/conflicting, deployment PASS/FAIL, baseline read-back missing, or conflicting primary samples | INDETERMINATE or DISPROVEN; never partial |
+| A05d | Policy v2 contract, or v3 without opt-in, with primary NOT_COMPLETED | Freeze rejects the opt-in (v2) / admission rejects the observation; retained v2 packets replay unchanged |
 | A07 | Verifier cannot reach the declared target | UNKNOWN observation; INDETERMINATE |
 | A08 | Crash after durable action intent with no reliable result | INDETERMINATE plus RECOVERY_REQUIRED; reconcile before any retry |
 | A09 | Approved rollback performed and independently restores scoped baseline | Child PROVEN, parent RECOVERED; original verdict unchanged |

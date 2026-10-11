@@ -46,6 +46,12 @@ Per-obligation outcomes are PASS, FAIL, UNKNOWN, or confirmed NOT_COMPLETED wher
 
 The partial/deployment rule resolves the supplied matrix's tension with "missing required evidence produces INDETERMINATE." It must be reviewed before code.
 
+Acceptance policy versions (frozen per contract by `policy_hash`; packets replay under the policy they were frozen with):
+
+- v2 (`POLICY_V2`): only deployment and stage obligations may be NOT_COMPLETED. An unmet primary is a FAIL, so a real non-deployment is DISPROVEN.
+- v3 (`POLICY_V3`, current for new approvals): additionally, a contract may opt a primary obligation into confirmed non-completion (`allow_not_completed: true` on that primary check, signed by the owner's approval). A primary NOT_COMPLETED then counts only when the authenticated receipt state is NOT_DEPLOYED (no conflicting receipt), every deployment obligation is NOT_COMPLETED, and every baseline obligation PASSes (independent read-back of the unchanged baseline). Otherwise that primary outcome is UNKNOWN. Qualified FAILs still decide DISPROVEN first; unknown, divergent or conflicting state is never partial. Without the opt-in, NOT_COMPLETED on a primary is rejected at admission.
+- The runtime verifier reports primary NOT_COMPLETED only for an opted-in primary whose live value still equals the approved restoration value while the target's active artifact is still the contract baseline; any other mismatch is FAIL.
+
 ## Transition invariants
 
 - Frozen contract bytes and accepted evidence are immutable. Corrections create a new linked version/transaction and fresh approval.

@@ -128,6 +128,7 @@ class Runtime:
         repo_id="ace/runtime",
         allowed_changes=("artifact",),
         expect=None,
+        allow_partial=False,
         parent=None,
         parent_transaction=None,
     ):
@@ -169,7 +170,9 @@ class Runtime:
                 "phase": c["phase"],
                 "mandatory": c["mandatory"],
                 "observers": [verifier],
-                "allow_not_completed": c["kind"] == "deployment",
+                # Primary opt-in (policy v3): a confirmed non-deployment may be PARTIALLY_PROVEN.
+                "allow_not_completed": c["kind"] == "deployment"
+                or (c["kind"] == "primary" and allow_partial is True),
             }
             for c in profile["checks"]
         ]
@@ -450,6 +453,7 @@ class Runtime:
             if status != 200:
                 return "FAIL", raw
             criterion = bundle["criteria"][check["id"]]
+            frozen_check = next(c for c in contract["checks"] if c["id"] == check["id"])
             # Recovery is judged against the value observed before the change; forward runs
             # against the owner's desired value. Never against the actor's artifact.
             wanted = criterion["restore_equals"] if contract["parent_packet_hash"] else criterion["equals"]
@@ -457,7 +461,18 @@ class Runtime:
                 live = json_pointer(strict_loads(raw), probe["pointer"])
             except ClosureError:
                 return "FAIL", raw
-            return ("PASS" if canonical(live) == canonical(wanted) else "FAIL"), raw
+            if canonical(live) == canonical(wanted):
+                return "PASS", raw
+            if (
+                frozen_check["allow_not_completed"]
+                and not contract["parent_packet_hash"]
+                and canonical(live) == canonical(criterion["restore_equals"])
+                and client.state()["artifact_hash"] == contract["baseline_hash"]
+            ):
+                # Independent read-back: the target still runs the baseline and still serves the
+                # original value, so the change was not made (rather than made wrongly).
+                return "NOT_COMPLETED", raw
+            return "FAIL", raw
         except ClosureError as exc:
             return "UNKNOWN", canonical({"probe_error": exc.code})
 

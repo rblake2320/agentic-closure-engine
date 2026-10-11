@@ -100,6 +100,11 @@ def register(sub):
         default=[],
         help="propose: CHECK=JSON owner-approved desired value for a primary check (repeat)",
     )
+    p.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="propose: opt the primary checks into confirmed non-deployment (PARTIALLY_PROVEN)",
+    )
     p.add_argument("--duration-ms", type=int, default=60_000)
     p.add_argument("--min-samples", type=int, default=3)
     p.add_argument("--skew-ms", type=int, default=2_000)
@@ -329,6 +334,7 @@ def _tx(args):
             artifact_bytes(args.artifact),
             intent=args.intent,
             expect=_expectations(args.expect),
+            allow_partial=args.allow_partial,
             duration_ms=args.duration_ms,
             min_samples=args.min_samples,
             max_clock_skew_ms=args.skew_ms,

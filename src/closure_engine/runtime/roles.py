@@ -25,6 +25,7 @@ ROLE_ACTIONS = {
 }
 PROPOSE_OPTIONS = {
     "expect",
+    "allow_partial",
     "duration_ms",
     "min_samples",
     "max_clock_skew_ms",
@@ -55,7 +56,9 @@ def propose_args(body):
     except (ValueError, TypeError) as exc:
         raise ClosureError("ARTIFACT_ENCODING_INVALID") from exc
     options = {k: body[k] for k in PROPOSE_OPTIONS if k in body}
-    numbers = {k: v for k, v in options.items() if k != "expect"}
+    numbers = {k: v for k, v in options.items() if k not in {"expect", "allow_partial"}}
+    if "allow_partial" in options and not isinstance(options["allow_partial"], bool):
+        raise ClosureError("INVALID_REQUEST")
     if "expect" in options and not isinstance(options["expect"], dict):
         raise ClosureError("INVALID_REQUEST")
     if any(type(v) is not int for v in numbers.values()) or not isinstance(body["intent"], str):

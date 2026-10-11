@@ -133,18 +133,47 @@ def test_target_refuses_artifact_confirmed_not_deployed(world):
     assert checks["primary"] == "FAIL"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="kernel: PARTIALLY_PROVEN needs every mandatory check PASS or "
-    "NOT_COMPLETED, and only deployment/stage may be NOT_COMPLETED; an honest primary "
-    "probe FAILs when the change was not deployed. Kernel policy decision (root).",
-)
-def test_confirmed_not_deployed_is_partially_proven_per_contract(world):
+def prepared_partial(runtime, tx, raw, expect):
+    runtime.propose("shop/api", tx, raw, intent="matrix " + tx, expect=expect, allow_partial=True, **WINDOW)
+    for step in ("approve", "freeze", "baseline", "bind"):
+        getattr(runtime, step)(tx)
+
+
+def test_opt_in_confirmed_not_deployed_is_partially_proven(world):
     deployment, pin, _, _ = world
     runtime = Runtime(deployment, pin)
-    prepared(runtime, "m-partial", json.dumps({"routes": {}}).encode(), {"primary": 2})
-    runtime.deploy("m-partial")
-    assert finish(runtime, "m-partial")["verdict"] == "PARTIALLY_PROVEN"
+    prepared_partial(runtime, "m-partial", json.dumps({"routes": {}}).encode(), {"primary": 2})
+    contract = runtime.custody.tx("m-partial")["contract"]
+    assert next(c for c in contract["checks"] if c["kind"] == "primary")["allow_not_completed"] is True
+    deployed = runtime.deploy("m-partial")
+    result = finish(runtime, "m-partial")
+    record(
+        "opt_in_confirmed_not_deployed",
+        receipt=deployed["receipt"],
+        verdict=result["verdict"],
+        reason_codes=result["reason_codes"],
+        checks=result["checks"],
+        state=result["state"],
+    )
+    assert deployed["receipt"] == "NOT_DEPLOYED"
+    assert result["verdict"] == "PARTIALLY_PROVEN" and result["reason_codes"] == ["CONFIRMED_NON_COMPLETION"]
+    assert result["checks"]["primary"] == "NOT_COMPLETED" and result["state"] == "PARTIALLY_PROVEN"
+
+
+def test_opt_in_does_not_excuse_a_wrong_deployed_value(world):
+    deployment, pin, _, _ = world
+    runtime = Runtime(deployment, pin)
+    prepared_partial(runtime, "m-wrong", artifact(5), {"primary": 2})
+    deployed = runtime.deploy("m-wrong")
+    result = finish(runtime, "m-wrong")
+    record(
+        "opt_in_wrong_value_deployed",
+        receipt=deployed["receipt"],
+        verdict=result["verdict"],
+        checks=result["checks"],
+    )
+    assert deployed["receipt"] == "EXECUTED"
+    assert result["verdict"] == "DISPROVEN" and result["checks"]["primary"] == "FAIL"
 
 
 def test_credential_rejected_is_not_deployed_without_change(world):
