@@ -152,6 +152,7 @@ bodies = {
         policy_hash=H,
         trust_hash=H,
         binding_hash=H,
+        inputs_hash=H,
         ledger_head=H,
         evaluated_at=T,
         window_start=T,

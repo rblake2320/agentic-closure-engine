@@ -8,6 +8,7 @@ from .contracts import FrozenContract, freeze
 from .crypto import sign, verify
 from .protocol import GENESIS, ClosureError, canonical, digest, milliseconds, strict_loads
 from .recovery import recovery_status
+from .verdicts import replay_packet
 
 VERDICTS = {"PROVEN", "DISPROVEN", "PARTIALLY_PROVEN", "INDETERMINATE"}
 ROLES = {
@@ -131,7 +132,7 @@ class Ledger:
             packet = b["packet"]
             if packet is None:
                 raise ClosureError("CLOSURE_PACKET_REQUIRED")
-            p = verify(packet, "closure-packet", self.trust)
+            p = replay_packet(packet, self.store, self.trust)
             if (
                 p["verdict"] != state
                 or p["contract_hash"] != frozen.hash
@@ -221,7 +222,7 @@ class Ledger:
         if state == "OBSERVING":
             if b["packet"] is None:
                 raise ClosureError("IMMEDIATE_VERIFICATION_REQUIRED")
-            p = verify(b["packet"], "closure-packet", self.trust)
+            p = replay_packet(b["packet"], self.store, self.trust)
             if p["contract_hash"] != frozen.hash or p["ledger_head"] != b["previous_hash"]:
                 raise ClosureError("IMMEDIATE_PACKET_MISMATCH")
             if any(
@@ -235,6 +236,7 @@ class Ledger:
                 if b["recovery_contract"] is None or b["recovery_approval"] is None:
                     raise ClosureError("RECOVERY_CONTRACT_REQUIRED")
                 child = freeze(b["recovery_contract"], b["recovery_approval"], self.trust)
+                replay_packet(b["packet"], self.store, self.trust)
             else:
                 child = None
             status = recovery_status(

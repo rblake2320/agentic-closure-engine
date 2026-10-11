@@ -11,7 +11,7 @@ from .demo import SCENARIOS, demo
 from .ledger import Ledger
 from .protocol import MAX_BYTES, ClosureError, milliseconds, strict_loads
 from .store import EvidenceStore
-from .verdicts import evaluate
+from .verdicts import evaluate, replay_packet
 
 
 def read_json(path):
@@ -36,6 +36,10 @@ def main(argv=None):
     p.add_argument("--trust", required=True)
     p.add_argument("--store", required=True)
     p.add_argument("--checkpoint", required=True)
+    p = sub.add_parser("verify-packet", help="Independently replay a signed packet from retained inputs")
+    p.add_argument("--packet", required=True)
+    p.add_argument("--trust", required=True)
+    p.add_argument("--store", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "demo":
@@ -60,6 +64,8 @@ def main(argv=None):
                     milliseconds(args.at),
                 ).to_dict()
                 result["mode"] = bundle["mode"]
+            elif args.command == "verify-packet":
+                result = replay_packet(read_json(args.packet), store, trust)
             else:
                 if not Path(args.ledger).is_file():
                     raise ClosureError("LEDGER_MISSING")

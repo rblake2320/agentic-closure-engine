@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 
 from .contracts import freeze
 from .crypto import sign, verify
-from .protocol import POLICY_HASH, ClosureError, digest, milliseconds, timestamp
+from .protocol import POLICY_HASH, ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
 
 
 @dataclass(frozen=True)
@@ -226,11 +226,18 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
     )
 
 
-def close_run(*, authority, ledger_head, **args):
-    # Compute here; callers cannot submit an arbitrary verdict for signing.
+def _packet_body(*, ledger_head, **args):
     result = evaluate(**args)
     c = args["frozen"].data
     b = verify(args["binding"], "run-binding", args["trust"])
+    manifest = {
+        "version": "v1",
+        "contract": c,
+        "approval": args["frozen"].approval,
+        "binding": args["binding"],
+        "records": args["records"],
+        "receipts": args["receipts"],
+    }
     body = {
         "transaction_id": c["transaction_id"],
         "attempt_id": c["attempt_id"],
@@ -243,6 +250,7 @@ def close_run(*, authority, ledger_head, **args):
         "policy_hash": POLICY_HASH,
         "trust_hash": args["trust"].hash,
         "binding_hash": digest(args["binding"]),
+        "inputs_hash": digest(manifest),
         "ledger_head": ledger_head,
         "evaluated_at": timestamp(args["now"]),
         "window_start": b["window_start"],
@@ -250,6 +258,39 @@ def close_run(*, authority, ledger_head, **args):
         "parent_packet_hash": c["parent_packet_hash"],
         **result.to_dict(),
     }
+    return body, manifest
+
+
+def close_run(*, authority, ledger_head, **args):
+    # Retain the exact evaluator inputs before signing their immutable reference.
+    body, manifest = _packet_body(ledger_head=ledger_head, **args)
+    args["store"].put(canonical(manifest))
     packet = sign(authority, "closure-packet", body, timestamp(args["now"]))
     verify(packet, "closure-packet", args["trust"])
     return packet
+
+
+def replay_packet(packet, store, trust):
+    """Reconstruct every signed claim without access to the authority private key."""
+    p = verify(packet, "closure-packet", trust)
+    manifest = strict_loads(store.get(p["inputs_hash"]))
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"version", "contract", "approval", "binding", "records", "receipts"}
+        or manifest["version"] != "v1"
+    ):
+        raise ClosureError("PACKET_INPUTS_INVALID")
+    frozen = freeze(manifest["contract"], manifest["approval"], trust)
+    expected, _ = _packet_body(
+        ledger_head=p["ledger_head"],
+        frozen=frozen,
+        binding=manifest["binding"],
+        records=manifest["records"],
+        receipts=manifest["receipts"],
+        store=store,
+        trust=trust,
+        now=milliseconds(p["evaluated_at"]),
+    )
+    if canonical(expected) != canonical(p) or packet["payload"]["created_at"] != p["evaluated_at"]:
+        raise ClosureError("PACKET_REPLAY_MISMATCH")
+    return p

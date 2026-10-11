@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 MAX_BYTES = 1_048_576
 MAX_DEPTH = 24
-POLICY_HASH = "sha256:" + hashlib.sha256(b"ACE/v1/20261011/mandatory-fail-first").hexdigest()
+POLICY_HASH = "sha256:" + hashlib.sha256(b"ACE/v1/20261011/mandatory-fail-first+packet-replay-v2").hexdigest()
 GENESIS = "sha256:" + hashlib.sha256(b"ACE/v1/genesis").hexdigest()
 DATE_CHECKER = FormatChecker()
 

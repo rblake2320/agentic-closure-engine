@@ -158,6 +158,10 @@
                               "type": "string",
                               "pattern": "^sha256:[0-9a-f]{64}$"
                             },
+                            "inputs_hash": {
+                              "type": "string",
+                              "pattern": "^sha256:[0-9a-f]{64}$"
+                            },
                             "ledger_head": {
                               "type": "string",
                               "pattern": "^sha256:[0-9a-f]{64}$"
@@ -273,6 +277,7 @@
                             "policy_hash",
                             "trust_hash",
                             "binding_hash",
+                            "inputs_hash",
                             "ledger_head",
                             "evaluated_at",
                             "window_start",

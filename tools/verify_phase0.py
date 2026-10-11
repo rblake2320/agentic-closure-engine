@@ -196,7 +196,8 @@ def main():
         "specVersion": "1.6",
         "version": 1,
         "metadata": {
-            "component": {"type": "application", "name": "agentic-closure-engine", "version": "0.1.0"}
+            "component": {"type": "application", "name": "agentic-closure-engine",
+                          "version": next(p["version"] for p in inventory if p["name"] == "agentic-closure-engine")}
         },
         "components": [{"type": "library", **p} for p in inventory],
     }
