@@ -8,6 +8,8 @@ build/
 dist/
 *.egg-info/
 /runtime/
+.runtime/
+*.token
 private/
 evidence-runs/
 .env

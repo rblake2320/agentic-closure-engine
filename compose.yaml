@@ -94,7 +94,7 @@ services:
     <<: *service
     user: '11007:11007'
     command: [gateway]
-    networks: [roles, frontend]
+    networks: [roles, frontend, integration]
     volumes:
       - gateway-data:/gateway:ro
       - gateway-auth:/gateway-auth:ro
@@ -102,6 +102,7 @@ services:
 networks:
   roles: {internal: true}
   frontend: {}
+  integration: {internal: true}
 volumes:
   actor-key: {}
   owner-key: {}
