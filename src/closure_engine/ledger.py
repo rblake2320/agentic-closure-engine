@@ -147,7 +147,7 @@ class Ledger:
             packet = b["packet"]
             if packet is None:
                 raise ClosureError("CLOSURE_PACKET_REQUIRED")
-            p = replay_packet(packet, self.store, self.trust)
+            # The common packet boundary above already reconstructed this body.
             if (
                 p["verdict"] != state
                 or p["contract_hash"] != frozen.hash
@@ -237,7 +237,7 @@ class Ledger:
         if state == "OBSERVING":
             if b["packet"] is None:
                 raise ClosureError("IMMEDIATE_VERIFICATION_REQUIRED")
-            p = replay_packet(b["packet"], self.store, self.trust)
+            # Reuse the common-boundary replay; no evaluator inputs changed.
             if p["contract_hash"] != frozen.hash or p["ledger_head"] != b["previous_hash"]:
                 raise ClosureError("IMMEDIATE_PACKET_MISMATCH")
             if any(
@@ -251,7 +251,6 @@ class Ledger:
                 if b["recovery_contract"] is None or b["recovery_approval"] is None:
                     raise ClosureError("RECOVERY_CONTRACT_REQUIRED")
                 child = freeze(b["recovery_contract"], b["recovery_approval"], self.trust)
-                replay_packet(b["packet"], self.store, self.trust)
             else:
                 child = None
             status = recovery_status(
@@ -317,6 +316,13 @@ class Ledger:
     def sequence(self):
         with self._db() as db:
             return self._verify(db)[1]
+
+    @property
+    def position(self):
+        """Read a verified head/sequence pair in one storage snapshot."""
+        with self._db() as db:
+            result = self._verify(db)
+            return result[0], result[1]
 
     @property
     def last_event_time(self):
