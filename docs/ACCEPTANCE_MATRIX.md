@@ -32,7 +32,7 @@ Use one bounded contract with a primary check and at least two mandatory invaria
 | A24 | Recovery target has independently authorized newer changes | Stale restoration precondition denied; no clobbering |
 | A25 | Recovery reports success but evidence unavailable through deadline | Child INDETERMINATE; parent RECOVERY_FAILED with unverified-restoration reason |
 | A26 | Same pinned inputs and clock, different prose/order of equivalent input delivery | Same verdict/reasons; event chronology and conflicting evidence rules preserved |
-| A27 | Trusted-clock discontinuity or future observation beyond tolerance | INDETERMINATE; no accepted window |
+| A27 | Future observation beyond configured clock-skew tolerance | INDETERMINATE; no accepted window; independent clock-discontinuity detection is a later operating gate |
 | A28 | Valid frozen contract changed by authority runtime or evaluator key used for verdict signing | Denied binding/purpose; valid authority-signed packet control passes |
 
 ## Execution layers after review
