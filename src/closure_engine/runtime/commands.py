@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 from ..protocol import ClosureError, canonical, strict_loads
+from .api import ROLES as API_ROLES
+from .api import ApiServer, load_credentials, load_credentials_value
 from .deployment import Deployment, enroll, enroll_target
+from .files import create_exclusive, replace_json
 from .identities import ROLES, init_identity
 from .service import Runtime, artifact_bytes
 from .target import ReferenceTarget, ReferenceTargetServer
@@ -32,7 +35,19 @@ TX_ACTIONS = (
     "recover-complete",
     "bundle",
 )
-COMMANDS = {"init", "enroll", "target-enroll", "target-init", "target-serve", "tx", "reconcile", "checkpoint", "status"}
+COMMANDS = {
+    "api-credential",
+    "api-serve",
+    "init",
+    "enroll",
+    "target-enroll",
+    "target-init",
+    "target-serve",
+    "tx",
+    "reconcile",
+    "checkpoint",
+    "status",
+}
 
 
 def _pin(parser):
@@ -81,10 +96,60 @@ def register(sub):
     p.add_argument("--recovery-deadline-ms", type=int, default=600_000)
     p.add_argument("--phase", choices=("all", "instant", "window"), default="all")
     p.add_argument("--output", help="bundle: write the runtime bundle to this new file")
-    for name, text in (("reconcile", "Broker: resolve pending intents from target state"),
-                       ("checkpoint", "Custodian: sign and print the current ledger head for export"),
-                       ("status", "Verified ledger summary")):
+    for name, text in (
+        ("reconcile", "Broker: resolve pending intents from target state"),
+        ("checkpoint", "Custodian: sign and print the current ledger head for export"),
+        ("status", "Verified ledger summary"),
+    ):
         _pin(sub.add_parser(name, help=text))
+    register_api(sub)
+
+
+def register_api(sub):
+    p = sub.add_parser(
+        "api-credential", help="Issue an API bearer token into a private file; stores only its hash"
+    )
+    p.add_argument("--credentials", required=True, help="Credentials file (sha256 -> principal)")
+    p.add_argument("--principal", required=True)
+    p.add_argument("--role", action="append", required=True, choices=sorted(API_ROLES))
+    p.add_argument("--token-out", required=True, help="New private file that receives the token")
+    p = sub.add_parser("api-serve", help="Authenticated loopback JSON API for the operator UI")
+    _pin(p)
+    p.add_argument("--credentials", required=True)
+    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--static-dir", help="Same-origin UI files")
+
+
+def _issue_credential(args):
+    import hashlib
+    import secrets
+
+    path = Path(args.credentials)
+    existing = strict_loads(path.read_bytes()) if path.exists() else {}
+    token = secrets.token_urlsafe(32)
+    create_exclusive(args.token_out, token.encode(), private=True)
+    digest_hex = hashlib.sha256(token.encode()).hexdigest()
+    existing[digest_hex] = {"principal": args.principal, "roles": sorted(set(args.role))}
+    load_credentials_value(existing)
+    replace_json(path, existing)
+    return {
+        "principal": args.principal,
+        "roles": sorted(set(args.role)),
+        "token_sha256": digest_hex,
+        "token_file": str(Path(args.token_out)),
+    }
+
+
+def _serve_api(args):
+    runtime = _runtime(args)
+    server = ApiServer(("127.0.0.1", args.port), runtime, load_credentials(args.credentials), args.static_dir)
+    print(json.dumps({"service": "ace-runtime-api", "port": server.server_address[1]}), flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 def _read_json_file(path):
@@ -140,6 +205,10 @@ def _tx(args):
 
 
 def dispatch(args):
+    if args.command == "api-credential":
+        return _issue_credential(args)
+    if args.command == "api-serve":
+        return _serve_api(args)
     if args.command == "init":
         deployment = Deployment(args.deployment)
         return init_identity(deployment.role_root(args.role), args.role, args.issuer)
@@ -155,7 +224,9 @@ def dispatch(args):
     if args.command == "target-init":
         return ReferenceTarget.initialize(args.state_dir, artifact_bytes(args.artifact), args.token_sha256)
     if args.command == "target-serve":
-        if args.host not in {"127.0.0.1", "::1", "localhost"} and not os.environ.get("ACE_TARGET_ALLOW_NETWORK"):
+        if args.host not in {"127.0.0.1", "::1", "localhost"} and not os.environ.get(
+            "ACE_TARGET_ALLOW_NETWORK"
+        ):
             raise ClosureError("NON_LOOPBACK_BIND_REQUIRES_ACE_TARGET_ALLOW_NETWORK")
         server = ReferenceTargetServer((args.host, args.port), args.state_dir)
         print(json.dumps({"service": "ace-reference-target", "port": server.server_address[1]}), flush=True)

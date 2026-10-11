@@ -135,13 +135,22 @@ def enroll_target(deployment, target_id, base_url, checks, *, timeout_ms=5000):
             raise ClosureError("INVALID_TARGET_CHECK", str(check.get("id")))
         seen.add(check["id"])
         probe = check["probe"]
-        if check["kind"] not in PROBES or not isinstance(probe, dict) or probe.get("type") not in PROBES[check["kind"]]:
+        if (
+            check["kind"] not in PROBES
+            or not isinstance(probe, dict)
+            or probe.get("type") not in PROBES[check["kind"]]
+        ):
             raise ClosureError("INVALID_TARGET_PROBE", check["id"])
         if check["phase"] not in {"instant", "window"} or not isinstance(check["mandatory"], bool):
             raise ClosureError("INVALID_TARGET_CHECK", check["id"])
         if probe["type"] in {"http-json", "http-unchanged"}:
             path = probe.get("path")
-            if not isinstance(path, str) or not path.startswith("/") or path.startswith("/ace/") or "?" in path:
+            if (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or path.startswith("/ace/")
+                or "?" in path
+            ):
                 raise ClosureError("INVALID_TARGET_PROBE", check["id"])
         if probe["type"] == "http-json":
             pointers = (probe.get("pointer"), probe.get("artifact_pointer"))

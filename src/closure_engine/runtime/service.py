@@ -19,7 +19,16 @@ from pathlib import Path
 from ..contracts import freeze
 from ..crypto import sign
 from ..ledger import Ledger
-from ..protocol import MAX_BYTES, POLICY_HASH, ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
+from ..protocol import (
+    MAX_BYTES,
+    POLICY_HASH,
+    ClosureError,
+    canonical,
+    digest,
+    milliseconds,
+    strict_loads,
+    timestamp,
+)
 from ..recovery import recovery_status
 from ..store import EvidenceStore
 from ..verdicts import close_run
@@ -266,7 +275,11 @@ class Runtime:
         meta = self._tx(tx)
         if meta["approval"] is not None:
             raise ClosureError("ALREADY_APPROVED", tx)
-        body = {"contract_hash": digest(meta["contract"]), "trust_hash": self.trust.hash, "policy_hash": POLICY_HASH}
+        body = {
+            "contract_hash": digest(meta["contract"]),
+            "trust_hash": self.trust.hash,
+            "policy_hash": POLICY_HASH,
+        }
         meta["approval"] = sign(self._identity("owner"), "approval", body, self.clock.now())
         frozen = self._frozen(meta)
         self._save_tx(meta)
@@ -304,7 +317,9 @@ class Runtime:
                     if status != 200:
                         raise ClosureError("PROTECTED_RESOURCE_UNAVAILABLE", check["id"])
                     protected[check["id"]] = self.store.put(raw)
-        manifest = self.store.put(canonical({"artifact_hash": contract["baseline_hash"], "protected": protected}))
+        manifest = self.store.put(
+            canonical({"artifact_hash": contract["baseline_hash"], "protected": protected})
+        )
         meta["manifest_hash"] = manifest
         self._save_tx(meta)
         self._append("verifier", tx, "BASELINED", refs=[manifest])
@@ -321,7 +336,9 @@ class Runtime:
         for check in contract["checks"]:
             count = contract["window"]["min_samples"] if check["phase"] == "window" else 1
             for _ in range(count):
-                challenges.append({"nonce": "n-" + secrets.token_hex(12), "check_id": check["id"], "phase": check["phase"]})
+                challenges.append(
+                    {"nonce": "n-" + secrets.token_hex(12), "check_id": check["id"], "phase": check["phase"]}
+                )
         body = {
             "transaction_id": tx,
             "attempt_id": contract["attempt_id"],
@@ -398,7 +415,11 @@ class Runtime:
         """Resolve a pending intent from independently read target state; never blind-retry."""
         intent = read_json(self._intent_path(intent_id), "INTENT_UNKNOWN")
         if intent["status"] != "PENDING":
-            return {"intent_id": intent_id, "status": intent["status"], "receipt_hash": intent["receipt_hash"]}
+            return {
+                "intent_id": intent_id,
+                "status": intent["status"],
+                "receipt_hash": intent["receipt_hash"],
+            }
         try:
             current = self._client(intent["target_id"]).state()["artifact_hash"]
         except ClosureError:
@@ -427,7 +448,10 @@ class Runtime:
             "action-receipt",
             {
                 "receipt_id": intent["intent_id"],
-                **{k: binding[k] for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")},
+                **{
+                    k: binding[k]
+                    for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
+                },
                 "operation": "deploy",
                 "status": status,
                 "recorded_at": now,
@@ -438,8 +462,15 @@ class Runtime:
         if status != "UNKNOWN":
             self._append("broker", intent["transaction_id"], "VERIFYING", receipt=receipt)
         final = "QUARANTINED" if status == "UNKNOWN" else "COMPLETED"
-        replace_json(self._intent_path(intent["intent_id"]), dict(intent, status=final, receipt_hash=receipt_hash))
-        return {"intent_id": intent["intent_id"], "status": final, "receipt": status, "receipt_hash": receipt_hash}
+        replace_json(
+            self._intent_path(intent["intent_id"]), dict(intent, status=final, receipt_hash=receipt_hash)
+        )
+        return {
+            "intent_id": intent["intent_id"],
+            "status": final,
+            "receipt": status,
+            "receipt_hash": receipt_hash,
+        }
 
     # ----- verifier ------------------------------------------------------------------------
     def _probe(self, check, meta, binding, client, artifact_doc):
@@ -480,7 +511,10 @@ class Runtime:
         contract = meta["contract"]
         body = {
             "observation_id": "obs-" + secrets.token_hex(12),
-            **{k: binding[k] for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")},
+            **{
+                k: binding[k]
+                for k in ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
+            },
             "check_id": check["id"],
             "evaluator_hash": contract["evaluator_hash"],
             "policy_hash": POLICY_HASH,
@@ -523,7 +557,11 @@ class Runtime:
         if phase in {"all", "instant"}:
             for challenge in [c for c in pending if c["phase"] == "instant"]:
                 check = checks[challenge["check_id"]]
-                results.append(self._observe_one(verifier, meta, binding, check, challenge["nonce"], client, artifact_doc))
+                results.append(
+                    self._observe_one(
+                        verifier, meta, binding, check, challenge["nonce"], client, artifact_doc
+                    )
+                )
         if phase in {"all", "window"}:
             window = meta["contract"]["window"]
             start = milliseconds(binding["window_start"])
@@ -541,7 +579,9 @@ class Runtime:
                 for check_id, nonces in by_check.items():
                     if nonces:
                         results.append(
-                            self._observe_one(verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc)
+                            self._observe_one(
+                                verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc
+                            )
                         )
             # Return only once the frozen window has closed, so the authority can close at once.
             remaining = start + window["duration_ms"] - self.clock.now_ms()
@@ -570,7 +610,10 @@ class Runtime:
         if meta["binding"] is None or state not in {"EXECUTING", "VERIFYING", "OBSERVING"}:
             raise ClosureError("NOT_CLOSABLE", str(state))
         contract = meta["contract"]
-        window_end = milliseconds(meta["binding"]["payload"]["body"]["window_start"]) + contract["window"]["duration_ms"]
+        window_end = (
+            milliseconds(meta["binding"]["payload"]["body"]["window_start"])
+            + contract["window"]["duration_ms"]
+        )
         if state == "VERIFYING":
             packet = self._close_packet(meta, self.clock.now_ms())
             body = packet["payload"]["body"]
@@ -596,7 +639,12 @@ class Runtime:
         self._save_tx(meta)
         if body["recovery_required"]:
             self._append("authority", tx, "RECOVERY_REQUIRED")
-        return dict(self.status(tx), verdict=body["verdict"], reason_codes=body["reason_codes"], packet_hash=digest(packet))
+        return dict(
+            self.status(tx),
+            verdict=body["verdict"],
+            reason_codes=body["reason_codes"],
+            packet_hash=digest(packet),
+        )
 
     def run(self, tx):
         """Broker deploy, then verifier observation across the whole window, then authority close.
