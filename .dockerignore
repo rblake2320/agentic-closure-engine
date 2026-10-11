@@ -6,6 +6,9 @@ dist
 build
 **/__pycache__
 .runtime
+.backups
+.backup-keys
+.recovered
 .env
 *.token
 *.key

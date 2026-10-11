@@ -1,0 +1,36 @@
+services:
+  backup:
+    image: agentic-closure-engine:0.3.0
+    user: '0:0'
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    mem_limit: 512m
+    cpus: 1
+    environment: {TMPDIR: /scratch}
+    tmpfs: ['/scratch:rw,noexec,nosuid,size=1g,mode=700']
+    volumes:
+      - actor-key:/volumes/keys/actor:ro
+      - owner-key:/volumes/keys/owner:ro
+      - authority-key:/volumes/keys/authority:ro
+      - verifier-key:/volumes/keys/verifier:ro
+      - broker-key:/volumes/keys/broker:ro
+      - operator:/volumes/operator:ro
+      - actor-auth:/volumes/auth/actor:ro
+      - owner-auth:/volumes/auth/owner:ro
+      - authority-auth:/volumes/auth/authority:ro
+      - verifier-auth:/volumes/auth/verifier:ro
+      - broker-auth:/volumes/auth/broker:ro
+      - custody-auth:/volumes/custody-auth:ro
+      - custody-data:/volumes/custody-data:ro
+      - broker-intents:/volumes/broker-intents:ro
+      - gateway-data:/volumes/gateway:ro
+      - gateway-auth:/volumes/gateway-auth:ro
+      - publisher-data:/volumes/publisher-data:ro
+      - ./.runtime:/volumes/exports:ro
+      - ${ACE_BACKUP_DIRECTORY:?Specify a private backup directory}:/backup
+      - ${ACE_BACKUP_KEY_DIRECTORY:?Specify a separate private key directory}:/backup-key
+volumes:
+  publisher-data: {}

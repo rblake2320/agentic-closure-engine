@@ -160,7 +160,10 @@ async function renderTransaction() {
             check.kind +
             " · " +
             check.phase +
-            (check.mandatory ? " · required" : ""),
+            (check.mandatory ? " · required" : "") +
+            (check.allow_not_completed
+              ? " · partial allowed if not deployed"
+              : ""),
         ),
         node(
           "span",
@@ -348,6 +351,7 @@ $("proposal-form").onsubmit = async (e) => {
       transaction_id: v.transaction_id,
       intent: v.intent,
       expect,
+      allow_partial: v.allow_partial === "on",
       artifact_base64: btoa(binary),
       duration_ms: Number(v.duration) * 1000,
       min_samples: 3,

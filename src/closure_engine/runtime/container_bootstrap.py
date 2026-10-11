@@ -15,6 +15,7 @@ from ..protocol import ClosureError, digest
 from .deployment import Deployment, enroll, enroll_target
 from .files import create_exclusive, create_json, read_json
 from .identities import ROLES, init_identity
+from .rpc import validate_credentials
 
 ROLE_UIDS = {
     "actor": 11001,
@@ -54,6 +55,9 @@ def _ownership(folder, uid):
 
 
 def _installed(root, operator, profile):
+    restore_state = root / "operator" / "RESTORE_STATE.json"
+    if restore_state.exists() and read_json(restore_state, "RESTORE_INCOMPLETE").get("status") != "COMPLETE":
+        raise ClosureError("RESTORE_INCOMPLETE")
     seal = read_json(root / "operator" / "installation.json", "INSTALLATION_INCOMPLETE")
     if seal.get("profile_hash") != digest(profile):
         raise ClosureError("INSTALLATION_PROFILE_MISMATCH")
@@ -64,6 +68,16 @@ def _installed(root, operator, profile):
     if digest(target) != seal["target_profile_hash"]:
         raise ClosureError("INSTALLATION_PROFILE_MISMATCH")
     for relative, expected in seal["configuration_hashes"].items():
+        # Operator-owned bearer enrollment is mutable for live issue/revoke operations.
+        # Its schema is checked, while role keys, trust, target and channel tokens stay pinned.
+        credential_paths = {
+            "gateway-auth/credentials.json",
+            "custody-auth/credentials.json",
+            *("auth/" + role + "/credentials.json" for role in SERVICE_ROLES),
+        }
+        if relative in credential_paths:
+            validate_credentials(read_json(root / relative, "INSTALLATION_INCOMPLETE"))
+            continue
         try:
             actual = digest((root / relative).read_bytes())
         except FileNotFoundError as exc:

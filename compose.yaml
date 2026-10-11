@@ -9,6 +9,9 @@ x-service: &service
   pids_limit: 64
   tmpfs: ['/tmp:size=64m,mode=1777']
   restart: unless-stopped
+  labels:
+    ace.product: closure-engine
+    ace.trust_hash: ${ACE_TRUST_HASH:-bootstrap-pending}
   networks: [roles]
   depends_on:
     bootstrap: {condition: service_completed_successfully}
@@ -20,6 +23,7 @@ services:
     image: agentic-closure-engine:0.3.0
     build: .
     user: '0:0'
+    labels: {ace.product: closure-engine}
     command: [bootstrap]
     network_mode: none
     volumes:
@@ -39,8 +43,8 @@ services:
       - broker-intents:/volumes/broker-intents
       - gateway-data:/volumes/gateway
       - gateway-auth:/volumes/gateway-auth
-      - ./.runtime:/volumes/exports
-      - ./.runtime/target-profile.json:/input/target-profile.json:ro
+      - ${ACE_RUNTIME_DIRECTORY:-./.runtime}:/volumes/exports
+      - ${ACE_RUNTIME_DIRECTORY:-./.runtime}/target-profile.json:/input/target-profile.json:ro
   custody:
     <<: *service
     user: '11006:11006'
@@ -53,6 +57,7 @@ services:
     <<: *service
     user: '11001:11001'
     command: [actor]
+    networks: [roles, targets]
     volumes:
       - actor-key:/state/actor:ro
       - operator:/state/operator:ro
@@ -77,6 +82,7 @@ services:
     <<: *service
     user: '11004:11004'
     command: [verifier]
+    networks: [roles, targets]
     volumes:
       - verifier-key:/state/verifier:ro
       - operator:/state/operator:ro
@@ -85,6 +91,7 @@ services:
     <<: *service
     user: '11005:11005'
     command: [broker]
+    networks: [roles, targets]
     volumes:
       - broker-key:/state/broker:ro
       - broker-intents:/state/broker/intents
@@ -94,15 +101,18 @@ services:
     <<: *service
     user: '11007:11007'
     command: [gateway]
+    environment:
+      ACE_PUBLIC_PORT: ${ACE_CONSOLE_PORT:-8782}
     networks: [roles, frontend, integration]
     volumes:
       - gateway-data:/gateway:ro
       - gateway-auth:/gateway-auth:ro
-    ports: ['127.0.0.1:8782:8782']
+    ports: ['127.0.0.1:${ACE_CONSOLE_PORT:-8782}:8782']
 networks:
   roles: {internal: true}
   frontend: {}
   integration: {internal: true}
+  targets: {}
 volumes:
   actor-key: {}
   owner-key: {}

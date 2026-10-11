@@ -44,16 +44,38 @@ def main():
 
     def run(command, label, *, expected=0, cwd=ROOT):
         started = time.monotonic()
-        completed = subprocess.run(
-            list(map(str, command)),
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
+        try:
+            completed = subprocess.run(
+                list(map(str, command)),
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=900 if label == "installed-tests" else 300,
+            )
+        except subprocess.TimeoutExpired as exc:
+
+            def decoded(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+            (out / (label + ".stdout.txt")).write_text(decoded(exc.stdout), encoding="utf-8")
+            (out / (label + ".stderr.txt")).write_text(decoded(exc.stderr), encoding="utf-8")
+            (out / (label + ".timeout.json")).write_text(
+                json.dumps(
+                    {
+                        "result": "Failed",
+                        "check": label,
+                        "cause": "COMMAND_TIMEOUT",
+                        "timeout_seconds": exc.timeout,
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            raise
         (out / (label + ".stdout.txt")).write_text(completed.stdout, encoding="utf-8")
         (out / (label + ".stderr.txt")).write_text(completed.stderr, encoding="utf-8")
         commands.append(
@@ -105,6 +127,7 @@ def main():
             "-o",
             "pythonpath=",
             "-q",
+            "--durations=20",
             "--junitxml",
             out / "tests.xml",
             "--basetemp",

@@ -3,7 +3,7 @@ services:
   bootstrap:
     volumes:
       - publisher-data:/volumes/publisher-data
-      - ./.runtime/initial-artifact.json:/input/initial-artifact.json:ro
+      - ${ACE_RUNTIME_DIRECTORY:-./.runtime}/initial-artifact.json:/input/initial-artifact.json:ro
   publisher:
     image: agentic-closure-engine:0.3.0
     user: '11008:11008'
@@ -16,12 +16,15 @@ services:
     pids_limit: 64
     tmpfs: ['/tmp:size=16m,mode=1777']
     restart: unless-stopped
+    labels:
+      ace.product: closure-engine
+      ace.trust_hash: ${ACE_TRUST_HASH:-bootstrap-pending}
     networks: [roles, publisher-frontend]
     depends_on:
       bootstrap: {condition: service_completed_successfully}
     volumes:
       - publisher-data:/publisher
-    ports: ['127.0.0.1:8784:9002']
+    ports: ['127.0.0.1:${ACE_PUBLISHER_PORT:-8784}:9002']
 networks:
   publisher-frontend: {}
 volumes:

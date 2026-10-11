@@ -9,6 +9,9 @@ dist/
 *.egg-info/
 /runtime/
 .runtime/
+.backups/
+.backup-keys/
+.recovered/
 *.token
 private/
 evidence-runs/

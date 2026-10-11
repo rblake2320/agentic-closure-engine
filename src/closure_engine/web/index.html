@@ -209,6 +209,11 @@
           The server derives a draft contract from the enrolled target’s checks.
           Owner approval freezes acceptance before deployment.
         </p>
+        <label class="hint"
+          ><input type="checkbox" name="allow_partial" /> Permit a partial
+          verdict when independent checks confirm that deployment never occurred
+          and the baseline stayed intact.</label
+        >
         <p id="proposal-error" role="alert"></p>
         <button class="primary" type="submit">Stage and propose →</button>
       </form>

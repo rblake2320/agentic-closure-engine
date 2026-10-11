@@ -1,13 +1,37 @@
 """Container command adapter: mount-owned trust pin and fixed service identity."""
 
 import json
+import os
 import sys
 from importlib.resources import files
 from pathlib import Path
 
 from closure_engine.cli import main
+from closure_engine.protocol import ClosureError
+from closure_engine.runtime.files import read_json
 
 mode = sys.argv[1]
+if mode in {"backup", "restore"}:
+    from closure_engine.runtime.container_backup import backup, restore
+
+    expected_pin = sys.argv[2]
+    try:
+        result = (
+            backup("/volumes", "/backup", expected_pin, "/backup-key/snapshot.key")
+            if mode == "backup"
+            else restore(
+                "/volumes",
+                "/backup/snapshot.ace",
+                "/backup-key/snapshot.key",
+                expected_pin,
+                read_json("/anchor/checkpoint.json", "RESTORE_CHECKPOINT_REQUIRED"),
+            )
+        )
+    except ClosureError as exc:
+        print(json.dumps({"error": exc.code, "detail": str(exc)}))
+        raise SystemExit(2)
+    print(json.dumps(result))
+    raise SystemExit(0)
 if mode == "bootstrap":
     from closure_engine.runtime.container_bootstrap import provision
 
@@ -32,6 +56,7 @@ if mode == "publisher":
     server = ReferenceTargetServer(("0.0.0.0", 9002), "/publisher")
     server.serve_forever()
 if mode == "gateway":
+    public_port = str(int(os.environ.get("ACE_PUBLIC_PORT", "8782")))
     raise SystemExit(
         main(
             [
@@ -45,9 +70,9 @@ if mode == "gateway":
                 "--port",
                 "8782",
                 "--allowed-host",
-                "127.0.0.1:8782",
+                "127.0.0.1:" + public_port,
                 "--allowed-host",
-                "localhost:8782",
+                "localhost:" + public_port,
                 "--allowed-host",
                 "gateway:8782",
                 "--static-dir",
