@@ -7,6 +7,7 @@ authority, custodian, operator, viewer. No request field can set time, and there
 that signs a caller-supplied object or changes evaluator/probe definitions.
 """
 
+import base64
 import mimetypes
 import re
 from pathlib import Path
@@ -42,6 +43,8 @@ STATUS = {
     "OBSERVATION_WINDOW_OPEN": 409,
     "STALE_LEDGER_HEAD": 409,
     "ILLEGAL_TRANSITION": 409,
+    "CLOSURE_NOT_ADMITTED": 404,
+    "EVIDENCE_MISSING": 404,
     "TARGET_UNREACHABLE": 502,
     "SERVICE_UNREACHABLE": 502,
 }
@@ -114,6 +117,24 @@ class _Handler(ServiceHandler):
                 return 200, principal
             if path == "/api/v1/status":
                 return 200, runtime.status()
+            if path == "/api/v1/audit-export":
+                query = dict(
+                    part.split("=", 1) for part in self.path.partition("?")[2].split("&") if "=" in part
+                )
+                try:
+                    start, limit = int(query.get("from", "1")), int(query.get("limit", "1000"))
+                except ValueError as exc:
+                    raise ClosureError("INVALID_EXPORT_RANGE") from exc
+                return 200, runtime.audit_export(start, limit)
+            match = re.fullmatch(r"/api/v1/evidence/(sha256:[0-9a-f]{64})", path)
+            if match:
+                return 200, {
+                    "hash": match.group(1),
+                    "base64": base64.b64encode(runtime.evidence(match.group(1))).decode(),
+                }
+            match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/closure", path)
+            if match:
+                return 200, runtime.closure(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/bundle", path)
             if match:
                 return 200, runtime.export_bundle(match.group(1))

@@ -1,0 +1,105 @@
+"""Independent replay of a custody audit export (the CIP network seam).
+
+Given only public material — the operator-pinned enrollment, an audit export (contracts,
+signed events, custodian checkpoint) and read access to evidence by digest — rebuild a fresh
+ledger with the public ``register``/``append`` APIs, verify the checkpoint (and an earlier
+anchor, to detect rollback or a forked history), and replay the transaction's closure packet.
+Nothing here signs anything or trusts the exporter's database.
+"""
+
+import hmac
+import tempfile
+from pathlib import Path
+
+from ..contracts import freeze
+from ..crypto import verify
+from ..ledger import Ledger
+from ..protocol import ClosureError, digest
+from ..store import EvidenceStore
+from ..verdicts import replay_packet
+
+
+class FetchingStore(EvidenceStore):
+    """Local verification store that fetches missing evidence by digest and re-hashes it."""
+
+    def __init__(self, root, fetch):
+        super().__init__(root)
+        self._fetch = fetch
+
+    def get(self, evidence_hash):
+        try:
+            return super().get(evidence_hash)
+        except ClosureError as exc:
+            if exc.code != "EVIDENCE_MISSING":
+                raise
+        raw = self._fetch(evidence_hash)
+        if not isinstance(raw, bytes) or digest(raw) != evidence_hash:
+            raise ClosureError("EVIDENCE_HASH_MISMATCH", evidence_hash)
+        super().put(raw)
+        return raw
+
+
+def replay_audit_export(
+    pages, trust, expected_trust_hash, fetch_evidence, *, prior_checkpoint=None, transaction=None
+):
+    """Verify an audit export end to end. ``pages`` are consecutive audit-export responses.
+
+    Returns the verified head/sequence, every transaction state and, when ``transaction`` is
+    given, the authoritative closure (verdict, reason codes, checks, packet hash) re-derived
+    from retained inputs.
+    """
+    if not hmac.compare_digest(trust.hash, expected_trust_hash):
+        raise ClosureError("TRUST_ANCHOR_MISMATCH")
+    if not pages:
+        raise ClosureError("EXPORT_EMPTY")
+    checkpoint = pages[-1]["checkpoint"]
+    expected_next = 1
+    for page in pages:
+        if page.get("version") != "v1" or page.get("trust_hash") != trust.hash:
+            raise ClosureError("EXPORT_TRUST_MISMATCH")
+        if page["from_sequence"] != expected_next or page["contracts"] != pages[0]["contracts"]:
+            raise ClosureError("EXPORT_PAGES_NOT_CONSECUTIVE")
+        if page["checkpoint"] != checkpoint and page is not pages[-1]:
+            # Earlier pages may carry older checkpoints; they must still be consistent below.
+            verify(page["checkpoint"], "checkpoint", trust)
+        expected_next = page["from_sequence"] + len(page["events"])
+    if pages[-1]["next_sequence"] is not None:
+        raise ClosureError("EXPORT_INCOMPLETE")
+    cp = verify(checkpoint, "checkpoint", trust)
+    with tempfile.TemporaryDirectory(prefix="ace-replay-") as work:
+        work = Path(work)
+        store = FetchingStore(work / "evidence", fetch_evidence)
+        ledger = Ledger(work / "ledger.sqlite", trust, store)
+        for item in pages[0]["contracts"]:
+            ledger.register(freeze(item["contract"], item["approval"], trust))
+        for page in pages:
+            for event in page["events"]:
+                ledger.append(event, ledger.head)
+        head, sequence = ledger.position
+        if cp["sequence"] != sequence or cp["head_hash"] != head:
+            raise ClosureError("CHECKPOINT_DOES_NOT_MATCH_EXPORT")
+        ledger.verify(checkpoint)
+        if prior_checkpoint is not None:
+            ledger.verify(prior_checkpoint)  # rollback/fork relative to an earlier anchor fails here
+        result = {
+            "verified_head": head,
+            "sequence": sequence,
+            "transactions": ledger.summary()["transactions"],
+        }
+        if transaction is not None:
+            packet = ledger.technical_packet(transaction)
+            if packet is None:
+                raise ClosureError("CLOSURE_NOT_ADMITTED", transaction)
+            body = replay_packet(packet, store, trust)
+            result["closure"] = {
+                "protocol": "cip.v1",
+                "transaction_id": transaction,
+                "verdict": body["verdict"],
+                "reason_codes": body["reason_codes"],
+                "checks": body["checks"],
+                "packet_hash": digest(packet),
+                "contract_hash": body["contract_hash"],
+                "artifact_hash": body["artifact_hash"],
+                "state": result["transactions"][transaction],
+            }
+        return result

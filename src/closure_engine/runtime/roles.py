@@ -194,10 +194,35 @@ class DistributedRuntime:
             result = self.close(tx)
         return dict(result, deployment=deployed, observations=len(observed["observations"]))
 
+    def _closure_fields(self, tx):
+        packet = self.custody.technical_packet(tx)
+        if packet is None:
+            return {"verdict": None, "reason_codes": [], "checks": {}, "technical_packet_hash": None}
+        body = packet["payload"]["body"]
+        return {
+            "verdict": body["verdict"],
+            "reason_codes": body["reason_codes"],
+            "checks": body["checks"],
+            "technical_packet_hash": digest(packet),
+        }
+
+    def closure(self, tx):
+        """CIP envelope with the ledger's authoritative technical packet (never a candidate)."""
+        packet = self.custody.technical_packet(tx)
+        if packet is None:
+            raise ClosureError("CLOSURE_NOT_ADMITTED", tx)
+        return {"protocol": "cip.v1", "packet": packet}
+
+    def audit_export(self, from_sequence=1, limit=1000):
+        return self.custody.audit_export(from_sequence, limit)
+
+    def evidence(self, evidence_hash):
+        return self.custody.evidence_get(evidence_hash)
+
     def status(self, tx=None):
-        summary = self.custody.summary()
         if tx is None:
-            return summary
+            return self.custody.listing()
+        summary = self.custody.summary()
         meta = self.custody.tx(tx)
         return {
             "transaction_id": tx,
@@ -212,6 +237,7 @@ class DistributedRuntime:
             "child_transaction": meta["child_transaction"],
             "ledger_head": summary["verified_head"],
             "ledger_sequence": summary["sequence"],
+            **self._closure_fields(tx),
         }
 
     def export_bundle(self, tx):

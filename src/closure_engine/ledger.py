@@ -329,6 +329,48 @@ class Ledger:
         with self._db() as db:
             return self._verify(db)[7]
 
+    def audit_export(self, from_sequence=1, limit=1000):
+        """Registered contracts and a bounded page of signed events from one verified snapshot.
+
+        Everything returned is public, signed material; an independent party rebuilds the
+        ledger with ``register`` and ``append`` and checks a custodian checkpoint against it.
+        """
+        if (
+            type(from_sequence) is not int
+            or from_sequence < 1
+            or type(limit) is not int
+            or not 1 <= limit <= 5000
+        ):
+            raise ClosureError("INVALID_EXPORT_RANGE")
+        with self._db() as db:
+            head, sequence = self._verify(db)[:2]
+            contracts = [
+                {"contract": strict_loads(raw), "approval": strict_loads(approval)}
+                for raw, approval in db.execute(
+                    "SELECT contract,approval FROM contracts ORDER BY transaction_id"
+                )
+            ]
+            events = [
+                strict_loads(raw)
+                for (raw,) in db.execute(
+                    "SELECT envelope FROM events WHERE sequence>=? ORDER BY sequence LIMIT ?",
+                    (from_sequence, limit),
+                )
+            ]
+        last = from_sequence + len(events) - 1
+        return {
+            "head": head,
+            "sequence": sequence,
+            "contracts": contracts,
+            "events": events,
+            "next_sequence": last + 1 if last < sequence else None,
+        }
+
+    def technical_packets(self):
+        """Every admitted technical packet keyed by transaction, from one verified snapshot."""
+        with self._db() as db:
+            return dict(self._verify(db)[3])
+
     def summary(self, checkpoint=None):
         """Verified head, sequence and every transaction state from one storage snapshot."""
         with self._db() as db:

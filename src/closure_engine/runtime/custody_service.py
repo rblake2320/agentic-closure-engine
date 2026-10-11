@@ -75,8 +75,17 @@ class _CustodyHandler(ServiceHandler):
                 return {"head": head, "sequence": sequence}
             if path == "/custody/v1/summary":
                 return custody.summary()
+            if path == "/custody/v1/listing":
+                return custody.listing()
             if path == "/custody/v1/evidence" and "hash" in query:
                 return custody.evidence_get(query["hash"])
+            if path == "/custody/v1/audit-export":
+                try:
+                    start = int(query.get("from", "1"))
+                    limit = int(query.get("limit", "1000"))
+                except ValueError as exc:
+                    raise ClosureError("INVALID_EXPORT_RANGE") from exc
+                return custody.audit_export(start, limit)
             if tx is None:
                 raise ClosureError("ROUTE_NOT_FOUND")
             if path == "/custody/v1/transaction":
@@ -91,6 +100,8 @@ class _CustodyHandler(ServiceHandler):
                 return {"items": custody.receipts(tx)}
             if path == "/custody/v1/manifest":
                 return custody.manifest(tx)
+            if path == "/custody/v1/technical-packet":
+                return {"packet": custody.technical_packet(tx)}
             raise ClosureError("ROUTE_NOT_FOUND")
         if method != "POST":
             raise ClosureError("METHOD_NOT_ALLOWED")
@@ -185,6 +196,20 @@ class RemoteCustody:
 
     def manifest(self, tx):
         return self._get("/custody/v1/manifest", tx)
+
+    def listing(self):
+        return self.client.call("GET", "/custody/v1/listing")
+
+    def technical_packet(self, tx):
+        return self._get("/custody/v1/technical-packet", tx)["packet"]
+
+    def audit_export(self, from_sequence=1, limit=1000):
+        return self.client.call(
+            "GET", f"/custody/v1/audit-export?from={int(from_sequence)}&limit={int(limit)}"
+        )
+
+    def evidence_get(self, evidence_hash):
+        return self.store.get(evidence_hash)
 
     def create_tx(self, proposal, parent_transaction=None):
         return self.client.call(

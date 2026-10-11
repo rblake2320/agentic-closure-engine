@@ -167,3 +167,32 @@ def test_api_credential_command_stores_only_hash(tmp_path):
     assert token not in result.stdout and token not in (tmp_path / "credentials.json").read_text()
     stored = json.loads((tmp_path / "credentials.json").read_text())
     assert stored == {hashlib.sha256(token.encode()).hexdigest(): {"principal": "ui", "roles": ["viewer"]}}
+
+
+def test_status_lists_staged_proposals_as_unapproved_without_verdict(api):
+    body = {
+        "target_id": "shop/api",
+        "transaction_id": "staged-1",
+        "artifact_base64": base64.b64encode(artifact(11)).decode(),
+        "intent": "Staged only",
+    }
+    assert call(api, "POST", "/api/v1/transactions", body, RELEASE)[0] == 201
+    status, summary = call(api, "GET", "/api/v1/status", token=VIEWER)
+    item = next(i for i in summary["items"] if i["transaction_id"] == "staged-1")
+    assert status == 200 and item["state"] == "PROPOSED" and item["approved"] is False
+    assert item["verdict"] is None and item["technical_packet_hash"] is None
+    assert "staged-1" not in summary["transactions"]  # ledger map stays ledger-only
+    assert call(api, "POST", "/api/v1/transactions/staged-1/approve", None, RELEASE)[0] == 200
+    item = next(
+        i
+        for i in call(api, "GET", "/api/v1/status", token=VIEWER)[1]["items"]
+        if i["transaction_id"] == "staged-1"
+    )
+    assert item["approved"] is True and item["state"] == "APPROVED" and item["verdict"] is None
+
+
+def test_packaged_ui_is_used_only_when_shipped():
+    from closure_engine.runtime.commands import packaged_ui
+
+    path = packaged_ui()
+    assert path is None or (__import__("pathlib").Path(path) / "index.html").is_file()

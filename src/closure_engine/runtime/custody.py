@@ -102,6 +102,60 @@ class LocalCustody:
             self._sign_checkpoint(body["sequence"], event_hash)
             return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
 
+    def listing(self):
+        """Every custody transaction, including staged proposals not yet in the ledger.
+
+        States and verdicts come from one verified ledger snapshot; a proposal that the owner
+        has not approved is reported as PROPOSED with approved=False and no verdict.
+        """
+        summary = self.ledger.summary()
+        packets = self.ledger.technical_packets()
+        items = []
+        folder = self.root / "transactions"
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            meta = read_json(path, "TRANSACTION_UNKNOWN")
+            tx = meta["transaction_id"]
+            packet = packets.get(tx)
+            body = packet["payload"]["body"] if packet else None
+            items.append(
+                {
+                    "transaction_id": tx,
+                    "target_id": meta["target_id"],
+                    "state": summary["transactions"].get(tx, "PROPOSED"),
+                    "approved": meta["approval"] is not None,
+                    "verdict": body["verdict"] if body else None,
+                    "technical_packet_hash": digest(packet) if packet else None,
+                    "parent_transaction": meta["parent_transaction"],
+                    "child_transaction": meta["child_transaction"],
+                }
+            )
+        return dict(summary, items=items)
+
+    def technical_packet(self, tx):
+        """The ledger's authoritative verdict packet for ``tx`` (None until a verdict is admitted)."""
+        return self.ledger.technical_packet(tx)
+
+    def audit_export(self, from_sequence=1, limit=1000):
+        """Public replay seam: contracts, a bounded page of signed events, and a custodian
+        checkpoint over the exact head of the same verified snapshot."""
+        with self._lock:
+            export = self.ledger.audit_export(from_sequence, limit)
+            body = {
+                "sequence": export["sequence"],
+                "head_hash": export["head"],
+                "trust_hash": self.trust.hash,
+            }
+            checkpoint = sign(self._custodian(), "checkpoint", body, self.clock.now())
+            return {
+                "version": "v1",
+                "trust_hash": self.trust.hash,
+                "contracts": export["contracts"],
+                "events": export["events"],
+                "from_sequence": from_sequence,
+                "next_sequence": export["next_sequence"],
+                "checkpoint": checkpoint,
+            }
+
     # ----- evidence ------------------------------------------------------------------------
     def evidence_get(self, evidence_hash):
         return self.store.get(evidence_hash)

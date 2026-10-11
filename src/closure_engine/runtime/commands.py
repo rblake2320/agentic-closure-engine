@@ -229,12 +229,9 @@ def _serve_api(args):
         )
     else:
         runtime = _runtime(args)
+    static = args.static_dir or packaged_ui()
     server = ApiServer(
-        (args.bind, args.port),
-        runtime,
-        load_credentials(args.credentials),
-        args.static_dir,
-        hosts=args.allowed_host,
+        (args.bind, args.port), runtime, load_credentials(args.credentials), static, hosts=args.allowed_host
     )
     _serve(server, "ace-runtime-api")
 
@@ -264,6 +261,14 @@ def _serve_role(args):
         credentials=load_credentials(args.credentials),
     )
     _serve(server, "ace-role-" + args.role)
+
+
+def packaged_ui():
+    """The operator UI shipped inside the wheel (closure_engine/web), if this build includes it."""
+    from importlib.resources import files
+
+    web = files("closure_engine").joinpath("web")
+    return str(web) if web.is_dir() and web.joinpath("index.html").is_file() else None
 
 
 def _deployment_trust(args):
