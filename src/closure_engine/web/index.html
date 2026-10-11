@@ -105,6 +105,21 @@
               <div id="checks"></div>
             </section>
           </div>
+          <section class="panel evidence" aria-labelledby="contract-heading">
+            <div class="panel-head">
+              <h2 id="contract-heading">Acceptance contract</h2>
+            </div>
+            <p id="contract-intent"></p>
+            <div id="criteria"></div>
+            <details>
+              <summary>Authorized changes and protected state</summary>
+              <pre id="contract-scope"></pre>
+            </details>
+            <details>
+              <summary>Full contract and approval</summary>
+              <pre id="contract-raw"></pre>
+            </details>
+          </section>
           <section class="panel evidence">
             <div class="panel-head">
               <h2>Evidence &amp; replay</h2>
@@ -169,7 +184,18 @@
             maxlength="10000"
           ></textarea></label
         ><label
-          >Actual artifact<input id="artifact" type="file" required /></label
+          >Required primary outcomes (JSON)<textarea
+            name="expect_json"
+            required
+            maxlength="20000"
+            placeholder='{"primary-check-id": "required value"}'
+          ></textarea></label
+        ><label>Artifact file<input id="artifact" type="file" /></label
+        ><label
+          >Artifact text (alternative to file)<textarea
+            name="artifact_text"
+            maxlength="524288"
+          ></textarea></label
         ><label
           >Observation duration (seconds)<input
             name="duration"

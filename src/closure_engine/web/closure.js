@@ -58,9 +58,7 @@ $("login-form").onsubmit = async (e) => {
     $("token").value = "";
     $("principal").textContent =
       identity.principal + " · " + identity.roles.join(", ");
-    $("propose").hidden = !identity.roles.some(
-      (r) => r === "actor" || r === "operator",
-    );
+    $("propose").hidden = !identity.roles.includes("actor");
     $("login").hidden = true;
     $("console").hidden = false;
     await refresh();
@@ -74,7 +72,12 @@ async function refresh() {
     summary = await api("/status");
     const nav = $("transactions");
     nav.replaceChildren();
-    for (const [tx, state] of Object.entries(summary.transactions || {})) {
+    const items =
+      summary.items ||
+      Object.entries(summary.transactions || {}).map(
+        ([transaction_id, state]) => ({ transaction_id, state }),
+      );
+    for (const { transaction_id: tx, state } of items) {
       const b = node(
         "button",
         tx + " · " + state,
@@ -86,6 +89,7 @@ async function refresh() {
       };
       nav.append(b);
     }
+    if (items.length && !selected) selected = items[0].transaction_id;
     const pos = $("ledger-position");
     pos.replaceChildren(
       node("strong", "EVENTS " + summary.sequence),
@@ -94,6 +98,8 @@ async function refresh() {
     $("empty").hidden = !!selected;
     $("transaction-detail").hidden = !selected;
     if (selected) await renderTransaction();
+    if ($("notice").textContent.includes("CHECKPOINT_MISSING"))
+      $("notice").textContent = "";
   } catch (e) {
     $("notice").textContent = e.message;
   }
@@ -124,6 +130,56 @@ async function renderTransaction() {
     ...(tx.packets || []).map((h) => node("div", h, "packet")),
   );
   $("checks").replaceChildren();
+  let contractReviewed = false;
+  $("criteria").replaceChildren();
+  $("contract-intent").textContent = "Loading the acceptance contract…";
+  $("contract-scope").textContent = "";
+  $("contract-raw").textContent = "";
+  try {
+    const review = await api("/transactions/" + selected + "/contract");
+    const contract = review.contract;
+    $("contract-intent").textContent = contract.intent;
+    $("contract-scope").textContent = JSON.stringify(
+      {
+        allowed_actions: contract.allowed_actions,
+        allowed_changes: contract.allowed_changes,
+        protected_resources: contract.protected_resources,
+        window: contract.window,
+      },
+      null,
+      2,
+    );
+    for (const check of contract.checks) {
+      const row = node("div", undefined, "check");
+      const criterion = review.evaluator.criteria[check.id];
+      row.append(
+        node(
+          "span",
+          check.id +
+            " · " +
+            check.kind +
+            " · " +
+            check.phase +
+            (check.mandatory ? " · required" : ""),
+        ),
+        node(
+          "span",
+          criterion
+            ? "Required: " +
+                JSON.stringify(criterion.equals) +
+                " · recovery: " +
+                JSON.stringify(criterion.restore_equals)
+            : "Protected check",
+        ),
+      );
+      $("criteria").append(row);
+    }
+    $("contract-raw").textContent = JSON.stringify(review, null, 2);
+    contractReviewed = true;
+  } catch (error) {
+    $("contract-intent").textContent =
+      "Contract review unavailable: " + error.message;
+  }
   let verdict = tx.verdict || null;
   let body = null;
   if (tx.packets?.length) {
@@ -169,7 +225,7 @@ async function renderTransaction() {
     DRAFT: [["Approve contract", "approve", "owner"]],
     APPROVED: [["Freeze contract", "freeze", "authority"]],
     FROZEN: [["Record baseline", "baseline", "verifier"]],
-    BASELINED: [["Bind run", "bind", "authority"]],
+    BASELINED: [["Execute and verify", "run", "operator"]],
     EXECUTING: [
       ["Deploy artifact", "deploy", "broker"],
       ["Observe deployed state", "observe", "verifier"],
@@ -193,9 +249,9 @@ async function renderTransaction() {
   };
   $("actions").replaceChildren();
   for (const [label, path, role] of routes[tx.state] || []) {
-    if (!identity.roles.some((r) => r === role || r === "operator")) continue;
+    if (!identity.roles.includes(role)) continue;
     const b = node("button", label, "secondary");
-    b.disabled = busy;
+    b.disabled = busy || (path === "approve" && !contractReviewed);
     b.onclick = () =>
       act(
         path,
@@ -268,15 +324,30 @@ $("proposal-form").onsubmit = async (e) => {
   try {
     const v = Object.fromEntries(new FormData(e.target));
     const file = $("artifact").files[0];
-    if (!file || file.size > 1048576)
-      throw new Error("Choose an actual artifact no larger than 1 MiB.");
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (file && v.artifact_text)
+      throw new Error("Choose one artifact source: a file or its exact text.");
+    const bytes = file
+      ? new Uint8Array(await file.arrayBuffer())
+      : new TextEncoder().encode(v.artifact_text || "");
+    if (!bytes.length || bytes.length > 524288)
+      throw new Error("Choose an actual artifact no larger than 512 KiB.");
+    const expect = JSON.parse(v.expect_json);
+    if (
+      !expect ||
+      typeof expect !== "object" ||
+      Array.isArray(expect) ||
+      !Object.keys(expect).length
+    )
+      throw new Error(
+        "Required outcomes must map primary check identifiers to their desired values.",
+      );
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const result = await api("/transactions", {
       target_id: v.target_id,
       transaction_id: v.transaction_id,
       intent: v.intent,
+      expect,
       artifact_base64: btoa(binary),
       duration_ms: Number(v.duration) * 1000,
       min_samples: 3,

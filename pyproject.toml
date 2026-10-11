@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-closure-engine"
-version = "0.2.1"
-description = "Offline deterministic acceptance kernel for evidence-bound agent outcomes"
+version = "0.3.0"
+description = "Independent deterministic closure authority with brokered execution and verified recovery"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["cryptography==50.0.2", "jsonschema==4.26.0", "rfc8785==0.1.4"]
