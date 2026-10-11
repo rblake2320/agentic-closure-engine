@@ -129,3 +129,175 @@ def test_F06_10_valid_control_identical_receipt_is_not_a_conflict(run):
     for _ in range(3):
         result = judge(run, receipts=duplicate)
         assert result.verdict == "PROVEN"
+
+# --- Follow-up coverage: two enrolled verifiers and differing receipt IDs -------------------------
+# Builds a second TrustStore and rebinds the contract inside each test; shared fixtures are untouched.
+
+from closure_engine.contracts import freeze  # noqa: E402
+from closure_engine.crypto import Identity, TrustStore  # noqa: E402
+from closure_engine.protocol import POLICY_HASH, digest  # noqa: E402
+from closure_engine.store import EvidenceStore  # noqa: E402
+
+V1, V2 = "verifier-01", "verifier-02"
+ROLES = ("owner", "actor", "broker", "verifier", "authority", "custodian")
+
+
+def multi_run(run, tmp_path):
+    keys = dict(run["keys"])
+    keys["verifier2"] = Identity.generate("verifier", V2)
+    checks = [c["id"] for c in run["contract"]["checks"]]
+    trust = TrustStore.from_identities(
+        [keys[r] for r in ROLES] + [keys["verifier2"]], verifier_checks=checks
+    )
+    contract = copy.deepcopy(run["contract"])
+    contract["trust_hash"] = trust.hash
+    for c in contract["checks"]:
+        if c["id"] == "primary":
+            c["observers"] = [V1, V2]
+    approval = sign(
+        keys["owner"],
+        "approval",
+        {"contract_hash": digest(contract), "trust_hash": trust.hash, "policy_hash": POLICY_HASH},
+        timestamp(run["start"]),
+    )
+    frozen = freeze(contract, approval, trust)
+    challenges = []
+    for c in contract["checks"]:
+        for i in range(3 if c["phase"] == "window" else 1):
+            nonce = c["id"] + "-nonce-" + str(i)
+            challenges.append({"nonce": nonce, "check_id": c["id"], "phase": c["phase"]})
+    binding = sign(
+        keys["authority"],
+        "run-binding",
+        {
+            "transaction_id": contract["transaction_id"],
+            "attempt_id": contract["attempt_id"],
+            "contract_hash": frozen.hash,
+            "artifact_hash": run["artifact"],
+            "target_id": contract["target_id"],
+            "window_start": timestamp(run["start"]),
+            "challenges": challenges,
+        },
+        timestamp(run["start"]),
+    )
+    store = EvidenceStore(tmp_path / "multi-evidence")
+    m = dict(
+        keys=keys, trust=trust, frozen=frozen, binding=binding, store=store, contract=contract,
+        start=run["start"], artifact=run["artifact"],
+    )
+
+    def observe(verifier_identity, check_id, result="PASS", index=0, offset=0):
+        check = next(c for c in contract["checks"] if c["id"] == check_id)
+        if check_id == "baseline":
+            raw, artifact = b"baseline artifact", run["baseline"]
+        else:
+            raw = ("multi " + check_id + str(index) + result + verifier_identity.issuer).encode()
+            artifact = run["artifact"]
+        body = {
+            "observation_id": check_id + "-obs-" + verifier_identity.issuer + str(index),
+            "transaction_id": contract["transaction_id"],
+            "attempt_id": contract["attempt_id"],
+            "contract_hash": frozen.hash,
+            "artifact_hash": artifact,
+            "target_id": contract["target_id"],
+            "check_id": check_id,
+            "evaluator_hash": contract["evaluator_hash"],
+            "policy_hash": POLICY_HASH,
+            "nonce": check_id + "-nonce-" + str(index),
+            "phase": check["phase"],
+            "observed_at": timestamp(run["start"] + offset),
+            "result": result,
+            "evidence_hash": store.put(raw),
+            "tamper_detected": False,
+        }
+        obs = sign(verifier_identity, "observation", body, body["observed_at"])
+        ingestion = sign(
+            keys["custodian"],
+            "ingestion",
+            {"envelope_hash": digest(obs), "received_at": body["observed_at"]},
+            body["observed_at"],
+        )
+        return {"observation": obs, "ingestion": ingestion}
+
+    base = []
+    for c in contract["checks"]:
+        if c["id"] == "primary":
+            continue
+        for i in range(3 if c["phase"] == "window" else 1):
+            base.append(observe(keys["verifier"], c["id"], index=i, offset=i * 30_000))
+    m["base"] = base
+    m["observe"] = observe
+    m["receipts"] = [m_receipt(m, "EXECUTED")]
+    return m
+
+
+def m_receipt(m, status, receipt_id="deploy-1"):
+    c = m["contract"]
+    body = {
+        "receipt_id": receipt_id,
+        "transaction_id": c["transaction_id"],
+        "attempt_id": c["attempt_id"],
+        "contract_hash": m["frozen"].hash,
+        "artifact_hash": m["artifact"],
+        "target_id": c["target_id"],
+        "operation": "deploy",
+        "status": status,
+        "recorded_at": timestamp(m["start"]),
+    }
+    return sign(m["keys"]["broker"], "action-receipt", body, timestamp(m["start"]))
+
+
+def multi_judge(m, records=(), receipts=None):
+    return evaluate(
+        frozen=m["frozen"],
+        binding=m["binding"],
+        records=m["base"] + list(records),
+        receipts=m["receipts"] if receipts is None else receipts,
+        store=m["store"],
+        trust=m["trust"],
+        now=m["start"] + 60_000,
+    )
+
+
+def assert_only_conflict_rejected(result):
+    # Receipts and contract binding were admitted; the only rejections are the conflicting observations.
+    assert {r["reason"] for r in result.rejected} <= {"REPLAYED_OR_CONFLICTING_OBSERVATION"}
+    assert result.verdict in {"DISPROVEN", "INDETERMINATE"}
+    assert result.checks["primary"] in {"FAIL", "UNKNOWN"}
+
+
+def test_F06_11_two_verifiers_pass_vs_fail_conflict_order_invariant(run, tmp_path):
+    m = multi_run(run, tmp_path)
+    conflict = [m["observe"](m["keys"]["verifier"], "primary", "PASS"),
+                m["observe"](m["keys"]["verifier2"], "primary", "FAIL")]
+    first = multi_judge(m, records=conflict)
+    assert_only_conflict_rejected(first)
+    assert first.to_dict() == multi_judge(m, records=list(reversed(conflict))).to_dict()
+
+
+def test_F06_12_two_verifiers_fail_vs_pass_conflict_order_invariant(run, tmp_path):
+    m = multi_run(run, tmp_path)
+    conflict = [m["observe"](m["keys"]["verifier"], "primary", "FAIL"),
+                m["observe"](m["keys"]["verifier2"], "primary", "PASS")]
+    first = multi_judge(m, records=conflict)
+    assert_only_conflict_rejected(first)
+    assert first.to_dict() == multi_judge(m, records=list(reversed(conflict))).to_dict()
+
+
+def test_F06_13_different_receipt_ids_executed_vs_not_deployed_unresolved(run, tmp_path):
+    m = multi_run(run, tmp_path)
+    receipts = [m_receipt(m, "EXECUTED", "deploy-1"), m_receipt(m, "NOT_DEPLOYED", "deploy-2")]
+    primary = [m["observe"](m["keys"]["verifier2"], "primary", "PASS")]
+    result = multi_judge(m, records=primary, receipts=receipts)
+    assert result.rejected == []
+    assert result.verdict == "INDETERMINATE"
+    assert result.reason_codes == ["REQUIRED_EVIDENCE_UNRESOLVED"]
+    assert result.recovery_required is True
+    assert result.to_dict() == multi_judge(m, records=primary, receipts=list(reversed(receipts))).to_dict()
+
+
+def test_F06_14_valid_multi_verifier_control_proven(run, tmp_path):
+    m = multi_run(run, tmp_path)
+    result = multi_judge(m, records=[m["observe"](m["keys"]["verifier2"], "primary", "PASS")])
+    assert result.rejected == []
+    assert result.verdict == "PROVEN"

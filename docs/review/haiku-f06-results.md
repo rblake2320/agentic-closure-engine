@@ -46,3 +46,45 @@ No src, fixture, schema, workflow, or tracker edits.
 
 - F06_02 keeps the existing design: an unchallenged signed FAIL is rejected (CHALLENGE_MISMATCH) and does not change the verdict. If the policy should be fail-closed for that case instead, that is a source decision for root; no source was changed here.
 - No source repair was needed; no genuine failure occurred.
+
+## Follow-up (registered before execution)
+
+Source: HAIKU-FOLLOWUP.md. Two assigned coverage cases plus one retained valid control.
+A second TrustStore with verifier-01 and verifier-02 is built inside the test; shared fixtures are not changed.
+
+| Test | Scenario | Registered expectation |
+|---|---|---|
+| test_F06_11 | Two enrolled verifiers conflict on the same primary nonce: v1 PASS / v2 FAIL | verdict != PROVEN; identical Evaluation for reversed input order |
+| test_F06_12 | Same conflict with roles swapped: v1 FAIL / v2 PASS | verdict != PROVEN; identical Evaluation for reversed input order |
+| test_F06_13 | Receipts with different IDs: deploy-1 EXECUTED and deploy-2 NOT_DEPLOYED | INDETERMINATE, REQUIRED_EVIDENCE_UNRESOLVED, recovery_required true, identical for reversed input |
+| test_F06_14 | Valid multi-verifier control: v2 signs primary PASS, v1 signs all other checks | PROVEN |
+
+Note on F06_11/12: a conflicting observation for an already-consumed nonce is rejected, but the FAIL can be
+admitted first if its digest sorts first, which would make the check DISPROVEN instead of INDETERMINATE.
+Only the non-PROVEN requirement and order invariance are registered here; the DISPROVEN-vs-INDETERMINATE class
+is recorded as a finding if it appears.
+
+### Follow-up execution
+
+- Command: `.venv/Scripts/python.exe -m pytest tests/test_review_conflicts.py -v` → 14 passed
+- Full suite: `.venv/Scripts/python.exe -m pytest -q` → 92 passed (78 baseline + 14 new)
+- Lint: `.venv/Scripts/ruff.exe check tests/test_review_conflicts.py` → All checks passed
+
+### Correction (honest record)
+
+The first follow-up draft of F06_11 to F06_13 passed for the wrong reason. Its receipts were copied from the
+base fixture, bound to the original contract hash, so they were rejected as CONTRACT_MISMATCH. With no admitted
+receipt, the verdict was INDETERMINATE regardless of the verifier conflict, so those assertions proved nothing.
+Its F06_14 control also failed (CONTRACT_MISMATCH and BASELINE_EVIDENCE_MISMATCH from the builder).
+
+Fixes made before the reported run: receipts are re-signed against the rebound contract hash, baseline evidence
+bytes match the contract baseline, and F06_11/12 assert that the only rejections are conflicting observations
+(receipts and contract binding admitted). F06_13 asserts `rejected == []`. F06_14 asserts `rejected == []`.
+The verdict expectation for F06_11/12 was tightened from "!= PROVEN" to {DISPROVEN, INDETERMINATE} with
+primary in {FAIL, UNKNOWN}. This is a tightening after the first failing run, recorded here.
+
+### Limits
+
+- The conflict cases use the same nonce for two verifiers. A PASS-first ordering yields INDETERMINATE and a
+  FAIL-first ordering yields DISPROVEN; the verdict class depends on which observation is admitted first by
+  digest order. Both are non-PROVEN and identical across input order. Recorded as a finding for root, not a fix.
