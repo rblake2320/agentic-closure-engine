@@ -23,7 +23,7 @@ PROBES = {
     "primary": {"http-json"},
     "invariant": {"http-unchanged"},
     "deployment": {"active-artifact"},
-    "stage": {"artifact-bytes"},
+    "stage": {"staged-artifact"},
     "baseline": {"baseline-custody"},
 }
 

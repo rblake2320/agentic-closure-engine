@@ -27,6 +27,17 @@ STATE_PATH = "/ace/v1/state"
 ARTIFACT_PATH = "/ace/v1/artifact"
 
 
+class _RefuseRedirect(request.HTTPRedirectHandler):
+    """Never follow a redirect: probes and credentials stay on the enrolled origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then surfaces the 3xx as an HTTPError with its status code
+
+
+# No environment proxies (a proxy would see the broker credential) and no redirects.
+_OPENER = request.build_opener(request.ProxyHandler({}), _RefuseRedirect())
+
+
 def json_pointer(document, pointer):
     """RFC 6901 lookup; raises ClosureError when the pointer does not resolve."""
     if pointer == "":
@@ -56,7 +67,7 @@ class TargetClient:
     def _call(self, method, path, body=None, headers=None):
         req = request.Request(self.base + path, data=body, method=method, headers=headers or {})
         try:
-            with request.urlopen(req, timeout=self.timeout) as response:
+            with _OPENER.open(req, timeout=self.timeout) as response:
                 raw = response.read(MAX_BYTES + 1)
                 status = response.status
         except error.HTTPError as exc:

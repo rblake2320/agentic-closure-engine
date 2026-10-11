@@ -331,6 +331,10 @@ class Runtime:
                 if self.clock.now_ms() < window_end:
                     return dict(self.status(tx), immediate=body["checks"])
                 return self._record_verdict(tx, self._close_packet(self._tx(tx), self.clock.now_ms()))
+            if body["verdict"] != "DISPROVEN" and self.clock.now_ms() < window_end:
+                # No known failure yet and instant checks unresolved (e.g. confirmed non-deployment):
+                # the frozen window must complete before any verdict is recorded.
+                raise ClosureError("OBSERVATION_WINDOW_OPEN", timestamp(window_end))
             return self._record_verdict(tx, packet)
         if state == "OBSERVING" and self.clock.now_ms() < window_end:
             raise ClosureError("OBSERVATION_WINDOW_OPEN", timestamp(window_end))
@@ -431,8 +435,10 @@ class Runtime:
                 if active == binding["artifact_hash"]:
                     return "PASS", raw
                 return ("NOT_COMPLETED" if active == contract["baseline_hash"] else "FAIL"), raw
-            if probe["type"] == "artifact-bytes":
-                raw = client.artifact()
+            if probe["type"] == "staged-artifact":
+                # Stage: the exact bound artifact is staged intact in custody, whether or not the
+                # target accepted it (that is the deployment check's question).
+                raw = self.store.get(binding["artifact_hash"])
                 return ("PASS" if digest(raw) == binding["artifact_hash"] else "FAIL"), raw
             if probe["type"] == "baseline-custody":
                 raw = self.store.get(meta["current_baseline_hash"])

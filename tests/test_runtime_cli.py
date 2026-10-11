@@ -47,7 +47,7 @@ CHECKS = [
         "kind": "stage",
         "phase": "instant",
         "mandatory": True,
-        "probe": {"type": "artifact-bytes"},
+        "probe": {"type": "staged-artifact"},
     },
     {
         "id": "baseline",
