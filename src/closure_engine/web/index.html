@@ -1,5 +1,191 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agentic Closure Engine</title><link rel="stylesheet" href="/closure.css"><script src="/closure.js" defer></script></head><body>
-<section id="login"><div class="login-intent"><div class="brand"><span class="symbol">◇</span> AGENTIC CLOSURE ENGINE</div><p class="eyebrow">OUTCOME ASSURANCE</p><h1>Claims become<br>accepted evidence.</h1><p>Freeze the intent. Observe the real result.<br>Keep the verdict independent of the actor.</p><div class="login-rule">DETERMINISTIC VERDICTS / DURABLE PROOF / VERIFIED RECOVERY</div></div><form id="login-form"><p class="eyebrow">OPERATOR CONSOLE</p><h2>Open this authority</h2><label>Access token<input id="token" type="password" autocomplete="off" minlength="32" required></label><button type="submit" class="primary">Connect →</button><p id="login-error" role="alert"></p><small>Issued by your operator. Kept in this tab’s memory only.</small></form></section>
-<div id="console" hidden><aside><div class="brand"><span class="symbol">◇</span><span>CLOSURE<br>ENGINE</span></div><p class="eyebrow">TRANSACTIONS</p><nav id="transactions" aria-label="Transactions"></nav><button id="propose" class="new">＋ Propose transaction</button><div class="identity"><p id="principal"></p><button id="logout" class="text">Disconnect ↗</button></div></aside><main><header><span>Authority / Closure records</span><span class="live">● LIVE LEDGER</span></header><div class="hero"><div><p class="eyebrow">INDEPENDENT OUTCOME ASSURANCE</p><h1 id="title">No outcome goes assumed.</h1><p id="subtitle">Select a transaction or propose an artifact for an enrolled target.</p></div><button id="refresh" class="secondary">↻ Refresh</button></div><p id="notice" role="status"></p><section id="ledger-position" aria-label="Verified ledger position"></section><section id="empty" class="empty"><h2>Start with an explicit intent.</h2><p>A transaction carries its artifact, frozen checks, protected state and evidence through one independently governed lifecycle.</p><p>Enroll identities and a real target using the shipped CLI, then propose work here. This console displays only recorded transactions.</p></section><div id="transaction-detail" hidden><div class="detail-grid"><section class="panel"><div class="panel-head"><h2>Transaction</h2><span id="state" class="badge"></span></div><dl id="bindings"></dl><div id="actions" class="actions"></div></section><section class="panel"><div class="panel-head"><h2>Technical verdict</h2><span class="eyebrow">DETERMINISTIC</span></div><div id="verdict" class="verdict">Awaiting evidence</div><p id="verdict-note">A successful operation does not declare this outcome proven.</p><div id="checks"></div></section></div><section class="panel evidence"><div class="panel-head"><h2>Evidence &amp; replay</h2><div class="actions"><button id="bundle" class="secondary">Download replay bundle</button><button id="closure" class="secondary">Download signed closure</button></div></div><p class="hint">Artifacts, contract, observations and verdicts remain bound by their digests. Recovery creates a separate verified transaction and preserves the original verdict.</p><div id="packets"></div><details><summary>Transaction record</summary><pre id="raw"></pre></details></section></div><footer>AGENTIC CLOSURE ENGINE <span>Evidence admission · Deterministic verdicts · Recovery assurance</span></footer></main></div>
-<dialog id="proposal"><form id="proposal-form"><div class="panel-head"><h2>Propose a transaction</h2><button id="close-proposal" type="button" class="text" aria-label="Close proposal">×</button></div><label>Transaction identifier<input name="transaction_id" required maxlength="128" placeholder="release-2026-10-11"></label><label>Enrolled target identifier<input name="target_id" required maxlength="128" placeholder="Your registered target"></label><label>Intended outcome<textarea name="intent" required maxlength="10000"></textarea></label><label>Actual artifact<input id="artifact" type="file" required></label><label>Observation duration (seconds)<input name="duration" type="number" min="3" max="3600" value="60" required></label><p class="hint">The server derives a draft contract from the enrolled target’s checks. Owner approval freezes acceptance before deployment.</p><p id="proposal-error" role="alert"></p><button class="primary" type="submit">Stage and propose →</button></form></dialog>
-</body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Agentic Closure Engine</title>
+    <link rel="stylesheet" href="/closure.css" />
+    <script src="/closure.js" defer></script>
+  </head>
+  <body>
+    <section id="login">
+      <div class="login-intent">
+        <div class="brand">
+          <span class="symbol">◇</span> AGENTIC CLOSURE ENGINE
+        </div>
+        <p class="eyebrow">OUTCOME ASSURANCE</p>
+        <h1>Claims become<br />accepted evidence.</h1>
+        <p>
+          Freeze the intent. Observe the real result.<br />Keep the verdict
+          independent of the actor.
+        </p>
+        <div class="login-rule">
+          DETERMINISTIC VERDICTS / DURABLE PROOF / VERIFIED RECOVERY
+        </div>
+      </div>
+      <form id="login-form">
+        <p class="eyebrow">OPERATOR CONSOLE</p>
+        <h2>Open this authority</h2>
+        <label
+          >Access token<input
+            id="token"
+            type="password"
+            autocomplete="off"
+            minlength="32"
+            required /></label
+        ><button type="submit" class="primary">Connect →</button>
+        <p id="login-error" role="alert"></p>
+        <small>Issued by your operator. Kept in this tab’s memory only.</small>
+      </form>
+    </section>
+    <div id="console" hidden>
+      <aside>
+        <div class="brand">
+          <span class="symbol">◇</span><span>CLOSURE<br />ENGINE</span>
+        </div>
+        <p class="eyebrow">TRANSACTIONS</p>
+        <nav id="transactions" aria-label="Transactions"></nav>
+        <button id="propose" class="new">＋ Propose transaction</button>
+        <div class="identity">
+          <p id="principal"></p>
+          <button id="logout" class="text">Disconnect ↗</button>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <span>Authority / Closure records</span
+          ><span class="live">● LIVE LEDGER</span>
+        </header>
+        <div class="hero">
+          <div>
+            <p class="eyebrow">INDEPENDENT OUTCOME ASSURANCE</p>
+            <h1 id="title">No outcome goes assumed.</h1>
+            <p id="subtitle">
+              Select a transaction or propose an artifact for an enrolled
+              target.
+            </p>
+          </div>
+          <button id="refresh" class="secondary">↻ Refresh</button>
+        </div>
+        <p id="notice" role="status"></p>
+        <section
+          id="ledger-position"
+          aria-label="Verified ledger position"
+        ></section>
+        <section id="empty" class="empty">
+          <h2>Start with an explicit intent.</h2>
+          <p>
+            A transaction carries its artifact, frozen checks, protected state
+            and evidence through one independently governed lifecycle.
+          </p>
+          <p>
+            Enroll identities and a real target using the shipped CLI, then
+            propose work here. This console displays only recorded transactions.
+          </p>
+        </section>
+        <div id="transaction-detail" hidden>
+          <div class="detail-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Transaction</h2>
+                <span id="state" class="badge"></span>
+              </div>
+              <dl id="bindings"></dl>
+              <div id="actions" class="actions"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Technical verdict</h2>
+                <span class="eyebrow">DETERMINISTIC</span>
+              </div>
+              <div id="verdict" class="verdict">Awaiting evidence</div>
+              <p id="verdict-note">
+                A successful operation does not declare this outcome proven.
+              </p>
+              <div id="checks"></div>
+            </section>
+          </div>
+          <section class="panel evidence">
+            <div class="panel-head">
+              <h2>Evidence &amp; replay</h2>
+              <div class="actions">
+                <button id="bundle" class="secondary">
+                  Download replay bundle</button
+                ><button id="closure" class="secondary">
+                  Download signed closure
+                </button>
+              </div>
+            </div>
+            <p class="hint">
+              Artifacts, contract, observations and verdicts remain bound by
+              their digests. Recovery creates a separate verified transaction
+              and preserves the original verdict.
+            </p>
+            <div id="packets"></div>
+            <details>
+              <summary>Transaction record</summary>
+              <pre id="raw"></pre>
+            </details>
+          </section>
+        </div>
+        <footer>
+          AGENTIC CLOSURE ENGINE
+          <span
+            >Evidence admission · Deterministic verdicts · Recovery
+            assurance</span
+          >
+        </footer>
+      </main>
+    </div>
+    <dialog id="proposal">
+      <form id="proposal-form">
+        <div class="panel-head">
+          <h2>Propose a transaction</h2>
+          <button
+            id="close-proposal"
+            type="button"
+            class="text"
+            aria-label="Close proposal"
+          >
+            ×
+          </button>
+        </div>
+        <label
+          >Transaction identifier<input
+            name="transaction_id"
+            required
+            maxlength="128"
+            placeholder="release-2026-10-11" /></label
+        ><label
+          >Enrolled target identifier<input
+            name="target_id"
+            required
+            maxlength="128"
+            placeholder="Your registered target" /></label
+        ><label
+          >Intended outcome<textarea
+            name="intent"
+            required
+            maxlength="10000"
+          ></textarea></label
+        ><label
+          >Actual artifact<input id="artifact" type="file" required /></label
+        ><label
+          >Observation duration (seconds)<input
+            name="duration"
+            type="number"
+            min="3"
+            max="3600"
+            value="60"
+            required
+        /></label>
+        <p class="hint">
+          The server derives a draft contract from the enrolled target’s checks.
+          Owner approval freezes acceptance before deployment.
+        </p>
+        <p id="proposal-error" role="alert"></p>
+        <button class="primary" type="submit">Stage and propose →</button>
+      </form>
+    </dialog>
+  </body>
+</html>
