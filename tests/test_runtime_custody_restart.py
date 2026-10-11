@@ -14,7 +14,10 @@ from closure_engine.runtime import ROLES, Deployment, Runtime, enroll, init_iden
 
 def ace(*args):
     return subprocess.run(
-        [sys.executable, "-I", "-m", "closure_engine", *map(str, args)], capture_output=True, text=True, timeout=120
+        [sys.executable, "-I", "-m", "closure_engine", *map(str, args)],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
 
@@ -36,7 +39,10 @@ def test_empty_installation_survives_process_restart(tmp_path):
     custody = deployment.role_root("custodian")
     assert (custody / "ledger.sqlite").exists()
     checkpoint = json.loads((custody / "checkpoint.json").read_bytes())
-    assert checkpoint["payload"]["body"]["sequence"] == 0 and checkpoint["payload"]["body"]["head_hash"] == GENESIS
+    assert (
+        checkpoint["payload"]["body"]["sequence"] == 0
+        and checkpoint["payload"]["body"]["head_hash"] == GENESIS
+    )
     second = status(deployment, pin)  # a new process reopening the existing empty ledger
     assert second.returncode == 0, second.stderr
     assert json.loads(second.stdout)["sequence"] == 0

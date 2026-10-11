@@ -23,6 +23,17 @@ from urllib.parse import urlsplit
 
 from ..protocol import MAX_BYTES, ClosureError, strict_loads
 
+READ_TIMEOUT_S = 15
+
+
+class _RefuseRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = request.build_opener(request.ProxyHandler({}), _RefuseRedirect())
+
+
 ROLES = {"actor", "owner", "broker", "verifier", "authority", "custodian", "operator", "viewer"}
 HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$|^\[[0-9a-fA-F:]+\]:[0-9]{1,5}$")
 
@@ -83,7 +94,7 @@ def allowed_hosts(names):
 class ServiceServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, *, hosts, credentials):
+    def __init__(self, address, handler, *, hosts, credentials, read_timeout=READ_TIMEOUT_S):
         """``hosts`` lists the exact host:port names clients use. ``None`` is allowed only for a
         loopback bind and then means 127.0.0.1:<port> and localhost:<port>."""
         if hosts is None and address[0] not in {"127.0.0.1", "localhost"}:
@@ -93,6 +104,7 @@ class ServiceServer(ThreadingHTTPServer):
             credentials if isinstance(credentials, CredentialSource) else CredentialSource(credentials)
         )
         self.write_lock = threading.Lock()
+        self.read_timeout = read_timeout
         super().__init__(address, handler)
         if self.allowed is None:
             port = self.server_address[1]
@@ -101,6 +113,11 @@ class ServiceServer(ThreadingHTTPServer):
 
 class ServiceHandler(BaseHTTPRequestHandler):
     server_version = "ACE-Service/1"
+
+    def setup(self):
+        # Socket read timeout: a client that stalls mid-headers or mid-body cannot hold a worker.
+        self.timeout = self.server.read_timeout
+        super().setup()
 
     def log_message(self, *_):
         return
@@ -133,15 +150,36 @@ class ServiceHandler(BaseHTTPRequestHandler):
         return self.server.credentials.principal(values[0][7:])
 
     def raw_body(self, limit=2 * MAX_BYTES):
-        if self.headers.get("Transfer-Encoding"):
+        if self.headers.get_all("Transfer-Encoding"):
             raise ClosureError("CHUNKED_BODY_REJECTED")
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise ClosureError("INVALID_LENGTH") from exc
-        if length < 0 or length > limit:
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) > 1:
+            raise ClosureError("AMBIGUOUS_CONTENT_LENGTH")
+        if not lengths:
+            if self.command == "POST":
+                raise ClosureError("CONTENT_LENGTH_REQUIRED")
+            return b""
+        value = lengths[0].strip()
+        if not value.isdigit():
+            raise ClosureError("INVALID_LENGTH")
+        length = int(value)
+        if length > limit:
             raise ClosureError("INPUT_TOO_LARGE")
-        return self.rfile.read(length) if length else b""
+        chunks, remaining = [], length
+        try:
+            while remaining:
+                chunk = self.rfile.read(remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except (TimeoutError, OSError) as exc:
+            self.close_connection = True
+            raise ClosureError("BODY_READ_TIMEOUT") from exc
+        if remaining:
+            self.close_connection = True
+            raise ClosureError("TRUNCATED_BODY")
+        return b"".join(chunks)
 
     def json_body(self):
         raw = self.raw_body()
@@ -177,9 +215,13 @@ class ServiceClient:
             headers["Content-Type"] = "application/octet-stream"
         req = request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
-            with request.urlopen(req, timeout=self.timeout) as response:
+            # Same opener as targets: no environment proxies, never follow a redirect, so the
+            # bearer token only ever goes to the configured service origin.
+            with _OPENER.open(req, timeout=self.timeout) as response:
                 body = response.read(2 * MAX_BYTES + 1)
         except error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise ClosureError("SERVICE_REDIRECT_REFUSED", f"{self.base}{path}: {exc.code}") from exc
             body = exc.read(4096)
             try:
                 code = json.loads(body).get("error", "SERVICE_ERROR")

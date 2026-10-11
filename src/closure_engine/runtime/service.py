@@ -254,7 +254,7 @@ class Runtime:
         body = {
             "contract_hash": digest(meta["contract"]),
             "trust_hash": self.trust.hash,
-            "policy_hash": POLICY_HASH,
+            "policy_hash": meta["contract"]["policy_hash"],  # frozen policy, not the current default
         }
         approval = sign(self._identity("owner"), "approval", body, self.clock.now())
         self.custody.set_approval(tx, approval)
@@ -438,6 +438,9 @@ class Runtime:
                 if active == binding["artifact_hash"]:
                     return "PASS", raw
                 return ("NOT_COMPLETED" if active == contract["baseline_hash"] else "FAIL"), raw
+            if probe["type"] == "artifact-bytes":
+                raw = client.artifact()
+                return ("PASS" if digest(raw) == binding["artifact_hash"] else "FAIL"), raw
             if probe["type"] == "staged-artifact":
                 # Stage: the exact bound artifact is staged intact in custody, whether or not the
                 # target accepted it (that is the deployment check's question).
@@ -484,7 +487,7 @@ class Runtime:
             **{k: binding[k] for k in SUBJECT},
             "check_id": check["id"],
             "evaluator_hash": meta["contract"]["evaluator_hash"],
-            "policy_hash": POLICY_HASH,
+            "policy_hash": meta["contract"]["policy_hash"],
             "nonce": nonce,
             "phase": check["phase"],
             "observed_at": observed_at,

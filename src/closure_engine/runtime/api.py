@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..protocol import ClosureError, strict_loads
 from .roles import propose_args
-from .rpc import ROLES, CredentialSource, ServiceHandler, ServiceServer, validate_credentials
+from .rpc import READ_TIMEOUT_S, ROLES, CredentialSource, ServiceHandler, ServiceServer, validate_credentials
 
 TX = r"([A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*)"
 ACTIONS = {
@@ -67,12 +67,14 @@ def load_credentials(path):
 
 
 class ApiServer(ServiceServer):
-    def __init__(self, address, runtime, credentials, static_dir=None, *, hosts=None):
+    def __init__(
+        self, address, runtime, credentials, static_dir=None, *, hosts=None, read_timeout=READ_TIMEOUT_S
+    ):
         self.runtime = runtime
         self.static_dir = Path(static_dir).resolve() if static_dir else None
         if self.static_dir is not None and not self.static_dir.is_dir():
             raise ClosureError("STATIC_DIR_MISSING", str(self.static_dir))
-        super().__init__(address, _Handler, hosts=hosts, credentials=credentials)
+        super().__init__(address, _Handler, hosts=hosts, credentials=credentials, read_timeout=read_timeout)
 
 
 class _Handler(ServiceHandler):

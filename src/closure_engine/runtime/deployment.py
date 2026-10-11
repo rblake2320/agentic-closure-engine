@@ -23,7 +23,10 @@ PROBES = {
     "primary": {"http-json"},
     "invariant": {"http-unchanged"},
     "deployment": {"active-artifact"},
-    "stage": {"staged-artifact"},
+    # artifact-bytes (legacy): the target serves the bound artifact bytes (served read-back).
+    # staged-artifact: the bound artifact is staged intact in custody. Frozen bundles keep the
+    # probe type they were approved with; neither is reinterpreted as the other.
+    "stage": {"artifact-bytes", "staged-artifact"},
     "baseline": {"baseline-custody"},
 }
 
