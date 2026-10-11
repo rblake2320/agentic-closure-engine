@@ -90,6 +90,8 @@ def evaluate(frozen, binding, records, receipts, store, trust, now):
                 raise ClosureError("FUTURE_EVIDENCE")
             if age > c["window"]["max_age_ms"]:
                 raise ClosureError("STALE_EVIDENCE")
+            if milliseconds(body["recorded_at"]) < milliseconds(binding["payload"]["created_at"]) - skew:
+                raise ClosureError("PRE_BINDING_EVIDENCE")
             receipt_states.add(body["status"])
             receipt_hashes.add(h)
             receipt_ids[body["receipt_id"]] = h
@@ -289,6 +291,9 @@ def replay_packet(packet, store, trust):
     ):
         raise ClosureError("PACKET_INPUTS_INVALID")
     frozen = freeze(manifest["contract"], manifest["approval"], trust)
+    if any(not isinstance(manifest[field], list) or len(manifest[field]) > 4096
+           for field in ("records", "receipts")):
+        raise ClosureError("PACKET_INPUTS_INVALID")
     expected, _ = _packet_body(
         ledger_head=p["ledger_head"],
         frozen=frozen,

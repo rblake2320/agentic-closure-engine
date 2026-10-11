@@ -113,7 +113,7 @@ class Ledger:
             contracts[tx] = frozen
         return contracts
 
-    def _apply(self, envelope, states, packets, bindings, contracts):
+    def _apply(self, envelope, states, packets, bindings, contracts, input_sets):
         b = verify(envelope, "ledger-event", self.trust)
         tx = b["transaction_id"]
         if tx not in contracts or b["contract_hash"] != contracts[tx].hash:
@@ -126,6 +126,17 @@ class Ledger:
             raise ClosureError("STATE_AUTHORITY_DENIED")
         if state in NORMAL and old != NORMAL[state]:
             raise ClosureError("ILLEGAL_TRANSITION")
+        if state in VERDICTS or state == "OBSERVING":
+            if b["packet"] is None:
+                raise ClosureError("CLOSURE_PACKET_REQUIRED")
+            p = replay_packet(b["packet"], self.store, self.trust)
+            if tx in bindings and p["binding_hash"] != digest(bindings[tx]):
+                raise ClosureError("VERDICT_ARTIFACT_BINDING_MISMATCH")
+            manifest = strict_loads(self.store.get(p["inputs_hash"]))
+            current = {digest(value) for value in manifest["records"] + manifest["receipts"]}
+            if not input_sets.get(tx, set()) <= current:
+                raise ClosureError("LEDGERED_EVIDENCE_OMITTED")
+            input_sets[tx] = current
         if state in VERDICTS:
             if old not in ACTIVE or tx in packets:
                 raise ClosureError("VERDICT_ALREADY_FINAL_OR_ILLEGAL")
@@ -260,7 +271,7 @@ class Ledger:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
         contracts = self._contracts(db)
-        states, packets, bindings, history = {}, {}, {}, {}
+        states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
         head, seq = GENESIS, 0
         for row_seq, event_id, raw, stored_hash in db.execute(
             "SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence"
@@ -276,7 +287,7 @@ class Ledger:
                 or canonical(envelope) != raw
             ):
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
-            self._apply(envelope, states, packets, bindings, contracts)
+            self._apply(envelope, states, packets, bindings, contracts, input_sets)
             head, seq = stored_hash, row_seq
             history[seq] = head
         if checkpoint is not None:
@@ -284,7 +295,7 @@ class Ledger:
             checkpoint_head = GENESIS if cp["sequence"] == 0 else history.get(cp["sequence"])
             if cp["trust_hash"] != self.trust.hash or checkpoint_head != cp["head_hash"]:
                 raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
-        return head, seq, states, packets, bindings, contracts
+        return head, seq, states, packets, bindings, contracts, input_sets
 
     def verify(self, checkpoint=None):
         with self._db() as db:
@@ -314,7 +325,7 @@ class Ledger:
         h = digest(raw)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
-            head, seq, states, packets, bindings, contracts = self._verify(db)
+            head, seq, states, packets, bindings, contracts, input_sets = self._verify(db)
             existing = db.execute(
                 "SELECT envelope,event_hash FROM events WHERE event_id=?", (b["event_id"],)
             ).fetchone()
@@ -325,7 +336,7 @@ class Ledger:
                 return existing[1]
             if head != expected_head or b["previous_hash"] != head or b["sequence"] != seq + 1:
                 raise ClosureError("STALE_LEDGER_HEAD")
-            self._apply(envelope, states, packets, bindings, contracts)
+            self._apply(envelope, states, packets, bindings, contracts, input_sets)
             db.execute("INSERT INTO events VALUES (?,?,?,?)", (seq + 1, b["event_id"], raw, h))
             db.execute("COMMIT")
         return h
