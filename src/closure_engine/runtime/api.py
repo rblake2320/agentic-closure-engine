@@ -14,7 +14,16 @@ from pathlib import Path
 
 from ..protocol import ClosureError, strict_loads
 from .roles import propose_args
-from .rpc import READ_TIMEOUT_S, ROLES, CredentialSource, ServiceHandler, ServiceServer, validate_credentials
+from .rpc import (
+    READ_TIMEOUT_S,
+    ROLES,
+    CredentialSource,
+    RoleDenied,
+    ServiceHandler,
+    ServiceServer,
+    public_detail,
+    validate_credentials,
+)
 
 TX = r"([A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*)"
 ACTIONS = {
@@ -100,17 +109,19 @@ class _Handler(ServiceHandler):
         try:
             status, value = self._route(method, path, principal)
             return self.send_json(status, value)
-        except PermissionError as exc:
-            return self.send_json(403, {"error": "ROLE_REQUIRED", "role": str(exc)})
+        except RoleDenied as exc:
+            return self.send_json(403, {"error": "ROLE_REQUIRED", "role": exc.role})
         except ClosureError as exc:
-            return self.send_json(STATUS.get(exc.code, 400), {"error": exc.code, "detail": str(exc)[:300]})
+            return self.send_json(
+                STATUS.get(exc.code, 400), {"error": exc.code, "detail": public_detail(exc)}
+            )
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "RUNTIME_ERROR", "type": type(exc).__name__})
 
     @staticmethod
     def _require(principal, role):
         if role not in principal["roles"]:
-            raise PermissionError(role)
+            raise RoleDenied(role)
 
     def _route(self, method, path, principal):
         runtime = self.server.runtime

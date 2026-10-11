@@ -9,7 +9,7 @@ import base64
 
 from ..protocol import ClosureError, digest
 from .custody_service import RemoteCustody
-from .rpc import ServiceClient, ServiceHandler, ServiceServer
+from .rpc import ServiceClient, ServiceHandler, ServiceServer, public_detail
 
 ROLE_ACTIONS = {
     "actor": {"propose": "propose", "recover": "begin_recovery"},
@@ -103,7 +103,9 @@ class _RoleHandler(ServiceHandler):
             with self.server.write_lock:
                 result = self._dispatch(action, actions[action], body)
         except ClosureError as exc:
-            return self.send_json(STATUS.get(exc.code, 400), {"error": exc.code, "detail": str(exc)[:300]})
+            return self.send_json(
+                STATUS.get(exc.code, 400), {"error": exc.code, "detail": public_detail(exc)}
+            )
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "ROLE_SERVICE_ERROR", "type": type(exc).__name__})
         return self.send_json(200, result)

@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..crypto import verify
 from ..protocol import ClosureError, digest
 from .custody import LocalCustody
-from .rpc import ServiceClient, ServiceHandler, ServiceServer
+from .rpc import RoleDenied, ServiceClient, ServiceHandler, ServiceServer, public_detail
 
 READERS = {"actor", "owner", "broker", "verifier", "authority", "operator", "viewer"}
 EVENT_SIGNERS = {"owner", "broker", "verifier", "authority"}
@@ -50,10 +50,12 @@ class _CustodyHandler(ServiceHandler):
         query = {k: v[0] for k, v in parse_qs(parts.query, strict_parsing=False).items() if len(v) == 1}
         try:
             result = self._route(method, parts.path, query, roles)
-        except PermissionError as exc:
-            return self.send_json(403, {"error": "ROLE_REQUIRED", "role": str(exc)})
+        except RoleDenied as exc:
+            return self.send_json(403, {"error": "ROLE_REQUIRED", "role": exc.role})
         except ClosureError as exc:
-            return self.send_json(STATUS.get(exc.code, 400), {"error": exc.code, "detail": str(exc)[:300]})
+            return self.send_json(
+                STATUS.get(exc.code, 400), {"error": exc.code, "detail": public_detail(exc)}
+            )
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "CUSTODY_ERROR", "type": type(exc).__name__})
         if isinstance(result, bytes):
@@ -63,7 +65,7 @@ class _CustodyHandler(ServiceHandler):
     @staticmethod
     def _need(roles, allowed):
         if not roles & allowed:
-            raise PermissionError(sorted(allowed)[0])
+            raise RoleDenied(sorted(allowed)[0])
 
     def _route(self, method, path, query, roles):
         custody = self.server.custody
@@ -127,7 +129,7 @@ class _CustodyHandler(ServiceHandler):
                 verify(event, "ledger-event", custody.trust)
                 signer = custody.trust.record(event["payload"]["key_id"])["role"]
                 if signer not in roles:
-                    raise PermissionError(signer)  # a role submits only its own signed events
+                    raise RoleDenied(signer)  # a role submits only its own signed events
                 return custody.append(event, body["expected_head"])
             if path == "/custody/v1/observations":
                 self._need(roles, {"verifier"})

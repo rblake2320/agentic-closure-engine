@@ -34,6 +34,23 @@ class _RefuseRedirect(request.HTTPRedirectHandler):
 _OPENER = request.build_opener(request.ProxyHandler({}), _RefuseRedirect())
 
 
+class RoleDenied(Exception):
+    """Caller lacks a role. Deliberately NOT an OSError: filesystem PermissionErrors must never be
+    reported as role denials."""
+
+    def __init__(self, role):
+        super().__init__(role)
+        self.role = role
+
+
+_ABSOLUTE_PATH = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*|(?<![\w:/])/(?:[\w.@-]+/)+[\w.@-]*")
+
+
+def public_detail(exc):
+    """Error detail safe to return to callers: bounded and without filesystem paths."""
+    return _ABSOLUTE_PATH.sub("<path>", str(exc))[:300]
+
+
 ROLES = {"actor", "owner", "broker", "verifier", "authority", "custodian", "operator", "viewer"}
 HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$|^\[[0-9a-fA-F:]+\]:[0-9]{1,5}$")
 
