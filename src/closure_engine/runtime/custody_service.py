@@ -100,6 +100,8 @@ class _CustodyHandler(ServiceHandler):
                 return {"items": custody.receipts(tx)}
             if path == "/custody/v1/manifest":
                 return custody.manifest(tx)
+            if path == "/custody/v1/view":
+                return custody.view(tx)
             if path == "/custody/v1/technical-packet":
                 return {"packet": custody.technical_packet(tx)}
             raise ClosureError("ROUTE_NOT_FOUND")
@@ -196,6 +198,9 @@ class RemoteCustody:
 
     def manifest(self, tx):
         return self._get("/custody/v1/manifest", tx)
+
+    def view(self, tx):
+        return self._get("/custody/v1/view", tx)
 
     def listing(self):
         return self.client.call("GET", "/custody/v1/listing")

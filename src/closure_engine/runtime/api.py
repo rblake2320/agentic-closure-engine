@@ -132,6 +132,9 @@ class _Handler(ServiceHandler):
                     "hash": match.group(1),
                     "base64": base64.b64encode(runtime.evidence(match.group(1))).decode(),
                 }
+            match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/contract", path)
+            if match:
+                return 200, runtime.contract(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/closure", path)
             if match:
                 return 200, runtime.closure(match.group(1))

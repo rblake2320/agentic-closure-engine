@@ -258,7 +258,10 @@ class Runtime:
         now = self.clock.now_ms()
         challenges = []
         for check in contract["checks"]:
-            count = contract["window"]["min_samples"] if check["phase"] == "window" else 1
+            # Window checks get twice the frozen minimum minus one challenges: the verifier can
+            # sample at half the maximum gap, giving scheduling headroom without changing the
+            # contract's duration, max_gap, min_samples or skew obligations.
+            count = 2 * contract["window"]["min_samples"] - 1 if check["phase"] == "window" else 1
             for _ in range(count):
                 challenges.append(
                     {"nonce": "n-" + secrets.token_hex(12), "check_id": check["id"], "phase": check["phase"]}
@@ -454,28 +457,40 @@ class Runtime:
         used = {r["observation"]["payload"]["body"]["nonce"] for r in self.custody.records(tx)}
         pending = [c for c in binding["challenges"] if c["nonce"] not in used]
         results = []
-        if phase in {"all", "instant"}:
-            for challenge in [c for c in pending if c["phase"] == "instant"]:
-                check = checks[challenge["check_id"]]
-                results.append(
-                    self._observe_one(
-                        verifier, meta, binding, check, challenge["nonce"], client, artifact_doc
-                    )
-                )
+        instants = [c for c in pending if c["phase"] == "instant"] if phase in {"all", "instant"} else []
+
+        def observe_instant(challenge):
+            check = checks[challenge["check_id"]]
+            results.append(
+                self._observe_one(verifier, meta, binding, check, challenge["nonce"], client, artifact_doc)
+            )
+
         if phase in {"all", "window"}:
             window = meta["contract"]["window"]
             start = milliseconds(binding["window_start"])
             by_check = {}
             for challenge in [c for c in pending if c["phase"] == "window"]:
                 by_check.setdefault(challenge["check_id"], []).append(challenge["nonce"])
-            consumed = window["min_samples"] - max((len(v) for v in by_check.values()), default=0)
-            # The last sample lands inside the window, within the clock-skew allowance of its end.
+            total = max((len(v) for v in by_check.values()), default=0)
+            issued = 2 * window["min_samples"] - 1
+            done = issued - total
+            # Samples are spread evenly over [start, end - skew/2]; the last lands inside the window.
             span = window["duration_ms"] - window["max_clock_skew_ms"] // 2
-            for index in range(consumed, window["min_samples"]):
-                due = start + (index * span) // (window["min_samples"] - 1)
+            cost = 250  # observed cost of one instant observation, refined as we go
+            for index in range(done, issued):
+                due = start + (index * span) // (issued - 1)
+                # Window samples keep their schedule; instant checks only use genuine slack.
+                while instants and self.clock.now_ms() + 2 * cost < due:
+                    t0 = self.clock.now_ms()
+                    observe_instant(instants.pop(0))
+                    cost = max(50, self.clock.now_ms() - t0)
                 delay = due - self.clock.now_ms()
                 if delay > 0:
                     time.sleep(delay / 1000)
+                if self.clock.now_ms() >= start + window["duration_ms"]:
+                    # Woken after the window closed: an out-of-window sample would disqualify the
+                    # check, and no sample was taken in time. Leave the remaining challenges unused.
+                    break
                 for check_id, nonces in by_check.items():
                     if nonces:
                         results.append(
@@ -483,6 +498,9 @@ class Runtime:
                                 verifier, meta, binding, checks[check_id], nonces.pop(0), client, artifact_doc
                             )
                         )
+        for challenge in instants:  # instant checks have no window constraint, only freshness
+            observe_instant(challenge)
+        if phase in {"all", "window"}:
             # Return only once the frozen window has closed, so the authority can close at once.
             remaining = start + window["duration_ms"] - self.clock.now_ms()
             if remaining > 0:
@@ -507,7 +525,8 @@ class Runtime:
             if meta["pending_binding"] is None:
                 raise ClosureError("RUN_BINDING_REQUIRED", tx)
             self._append("broker", tx, "EXECUTING", binding=meta["pending_binding"])
-        return self.status(tx)
+            return {"transaction_id": tx, "state": "EXECUTING"}
+        return {"transaction_id": tx, "state": "EXECUTING"}
 
     def deploy(self, tx):
         """Broker: precondition-checked, write-ahead deployment of the bound artifact."""
@@ -520,8 +539,10 @@ class Runtime:
     def begin_intent(self, tx):
         """Broker: verify the precondition and durably record intent BEFORE any side effect."""
         self._identity("broker")
-        self.start_execution(tx)
         meta = self._tx(tx)
+        if meta["binding"] is None:
+            self.start_execution(tx)
+            meta = self._tx(tx)
         state = self._client(meta["target_id"]).state()
         intent = {
             "intent_id": "intent-" + secrets.token_hex(12),
@@ -623,8 +644,8 @@ class Runtime:
         return dict(result, deployment=deployed, observations=len(observed["observations"]))
 
     # ----- read models ---------------------------------------------------------------------
-    def _closure_fields(self, tx):
-        packet = self.custody.technical_packet(tx)
+    @staticmethod
+    def _closure_fields(packet):
         if packet is None:
             return {"verdict": None, "reason_codes": [], "checks": {}, "technical_packet_hash": None}
         body = packet["payload"]["body"]
@@ -633,6 +654,18 @@ class Runtime:
             "reason_codes": body["reason_codes"],
             "checks": body["checks"],
             "technical_packet_hash": digest(packet),
+        }
+
+    def contract(self, tx):
+        """Read-only: the exact draft contract (and approval, once signed) for owner review."""
+        meta = self.custody.tx(tx)
+        return {
+            "transaction_id": tx,
+            "contract_hash": digest(meta["contract"]),
+            "contract": meta["contract"],
+            "approval": meta["approval"],
+            "artifact_hash": meta["artifact_hash"],
+            "parent_transaction": meta["parent_transaction"],
         }
 
     def closure(self, tx):
@@ -651,11 +684,12 @@ class Runtime:
     def status(self, tx=None):
         if tx is None:
             return self.custody.listing()
-        summary = self.custody.summary()
-        meta = self._tx(tx)
+        view = self.custody.view(tx)  # one verified ledger snapshot
+        meta = self._tx(tx) if hasattr(self, "_tx") else self.custody.tx(tx)
         return {
             "transaction_id": tx,
-            "state": summary["transactions"].get(tx, "PROPOSED"),
+            "state": view["state"] or "PROPOSED",
+            "approved": meta["approval"] is not None,
             "target_id": meta["target_id"],
             "contract_hash": digest(meta["contract"]),
             "artifact_hash": meta["artifact_hash"],
@@ -664,9 +698,9 @@ class Runtime:
             "packets": list(meta["packets"]),
             "parent_transaction": meta["parent_transaction"],
             "child_transaction": meta["child_transaction"],
-            "ledger_head": summary["verified_head"],
-            "ledger_sequence": summary["sequence"],
-            **self._closure_fields(tx),
+            "ledger_head": view["verified_head"],
+            "ledger_sequence": view["sequence"],
+            **self._closure_fields(view["packet"]),
         }
 
     def export_bundle(self, tx):

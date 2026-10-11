@@ -196,3 +196,33 @@ def test_packaged_ui_is_used_only_when_shipped():
 
     path = packaged_ui()
     assert path is None or (__import__("pathlib").Path(path) / "index.html").is_file()
+
+
+def test_owner_can_review_exact_draft_contract_before_approval(api):
+    body = {
+        "target_id": "shop/api",
+        "transaction_id": "review-1",
+        "artifact_base64": base64.b64encode(artifact(12)).decode(),
+        "intent": "Reviewable change",
+    }
+    created = call(api, "POST", "/api/v1/transactions", body, RELEASE)[1]
+    status, draft = call(api, "GET", "/api/v1/transactions/review-1/contract", token=VIEWER)
+    assert status == 200 and draft["approval"] is None
+    assert draft["contract_hash"] == created["contract_hash"]
+    contract = draft["contract"]
+    assert contract["intent"] == "Reviewable change" and contract["protected_resources"]
+    assert {c["id"]: (c["phase"], c["mandatory"]) for c in contract["checks"]}["protected-other"] == (
+        "window",
+        True,
+    )
+    assert set(contract["window"]) == {
+        "duration_ms",
+        "max_gap_ms",
+        "min_samples",
+        "max_age_ms",
+        "max_clock_skew_ms",
+    }
+    assert call(api, "POST", "/api/v1/transactions/review-1/approve", None, RELEASE)[0] == 200
+    approved = call(api, "GET", "/api/v1/transactions/review-1/contract", token=VIEWER)[1]
+    assert approved["approval"]["payload"]["body"]["contract_hash"] == draft["contract_hash"]
+    assert call(api, "POST", "/api/v1/transactions/review-1/contract", None, RELEASE)[0] == 404

@@ -1,5 +1,6 @@
 """Bounded protocol parsing, canonical bytes and time primitives."""
 
+import functools
 import hashlib
 import json
 import re
@@ -101,13 +102,19 @@ def strict_loads(raw):
         raise ClosureError("INVALID_JSON") from exc
 
 
-def validate(name, value):
-    canonical(value)
+@functools.lru_cache(maxsize=None)
+def _validator(name):
+    # Packaged schemas are immutable for the life of the process; compile each once.
     try:
         schema = strict_loads(files("closure_engine").joinpath("schemas", "v1", name + ".json").read_bytes())
     except FileNotFoundError as exc:
         raise ClosureError("UNKNOWN_SCHEMA") from exc
-    errors = list(Draft202012Validator(schema, format_checker=DATE_CHECKER).iter_errors(value))
+    return Draft202012Validator(schema, format_checker=DATE_CHECKER)
+
+
+def validate(name, value):
+    canonical(value)
+    errors = list(_validator(name).iter_errors(value))
     if errors:
         raise ClosureError("SCHEMA_INVALID", str(errors[0].message)[:240])
     return value

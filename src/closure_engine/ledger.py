@@ -366,6 +366,12 @@ class Ledger:
             "next_sequence": last + 1 if last < sequence else None,
         }
 
+    def snapshot(self):
+        """Head, sequence, every state and every technical packet from one verified read."""
+        with self._db() as db:
+            head, sequence, states, packets = self._verify(db)[:4]
+        return {"head": head, "sequence": sequence, "transactions": dict(states), "packets": dict(packets)}
+
     def technical_packets(self):
         """Every admitted technical packet keyed by transaction, from one verified snapshot."""
         with self._db() as db:

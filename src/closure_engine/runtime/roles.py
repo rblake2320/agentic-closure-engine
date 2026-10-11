@@ -194,8 +194,8 @@ class DistributedRuntime:
             result = self.close(tx)
         return dict(result, deployment=deployed, observations=len(observed["observations"]))
 
-    def _closure_fields(self, tx):
-        packet = self.custody.technical_packet(tx)
+    @staticmethod
+    def _closure_fields(packet):
         if packet is None:
             return {"verdict": None, "reason_codes": [], "checks": {}, "technical_packet_hash": None}
         body = packet["payload"]["body"]
@@ -204,6 +204,18 @@ class DistributedRuntime:
             "reason_codes": body["reason_codes"],
             "checks": body["checks"],
             "technical_packet_hash": digest(packet),
+        }
+
+    def contract(self, tx):
+        """Read-only: the exact draft contract (and approval, once signed) for owner review."""
+        meta = self.custody.tx(tx)
+        return {
+            "transaction_id": tx,
+            "contract_hash": digest(meta["contract"]),
+            "contract": meta["contract"],
+            "approval": meta["approval"],
+            "artifact_hash": meta["artifact_hash"],
+            "parent_transaction": meta["parent_transaction"],
         }
 
     def closure(self, tx):
@@ -222,11 +234,12 @@ class DistributedRuntime:
     def status(self, tx=None):
         if tx is None:
             return self.custody.listing()
-        summary = self.custody.summary()
-        meta = self.custody.tx(tx)
+        view = self.custody.view(tx)  # one verified ledger snapshot
+        meta = self._tx(tx) if hasattr(self, "_tx") else self.custody.tx(tx)
         return {
             "transaction_id": tx,
-            "state": summary["transactions"].get(tx, "PROPOSED"),
+            "state": view["state"] or "PROPOSED",
+            "approved": meta["approval"] is not None,
             "target_id": meta["target_id"],
             "contract_hash": digest(meta["contract"]),
             "artifact_hash": meta["artifact_hash"],
@@ -235,9 +248,9 @@ class DistributedRuntime:
             "packets": list(meta["packets"]),
             "parent_transaction": meta["parent_transaction"],
             "child_transaction": meta["child_transaction"],
-            "ledger_head": summary["verified_head"],
-            "ledger_sequence": summary["sequence"],
-            **self._closure_fields(tx),
+            "ledger_head": view["verified_head"],
+            "ledger_sequence": view["sequence"],
+            **self._closure_fields(view["packet"]),
         }
 
     def export_bundle(self, tx):

@@ -42,6 +42,7 @@ class LocalCustody:
         self.store = EvidenceStore(self.root / "evidence")
         self._ledger = None
         self._lock = threading.RLock()
+        self._cache = None  # (file identity, verified snapshot)
 
     # ----- ledger --------------------------------------------------------------------------
     @property
@@ -57,14 +58,43 @@ class LocalCustody:
     def _custodian(self):
         return self.deployment.identity("custodian", self.trust)
 
+    def _file_identity(self):
+        path = self.root / "ledger.sqlite"
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+    def snapshot(self):
+        """Verified ledger snapshot, re-verified in full whenever the database file changes.
+
+        Appends always run the ledger's full admission. Reads reuse the last verified snapshot
+        only while the file is byte-for-byte unchanged on disk (mtime, size, inode).
+        """
+        with self._lock:
+            before = self._file_identity()
+            if self._cache is not None and before is not None and self._cache[0] == before:
+                return self._cache[1]
+            snapshot = self.ledger.snapshot()
+            after = self._file_identity()
+            self._cache = (after, snapshot) if before == after and after is not None else None
+            return snapshot
+
     def position(self):
-        return self.ledger.position
+        snapshot = self.snapshot()
+        return snapshot["head"], snapshot["sequence"]
 
     def summary(self):
-        return self.ledger.summary()
+        snapshot = self.snapshot()
+        return {
+            "verified_head": snapshot["head"],
+            "sequence": snapshot["sequence"],
+            "transactions": dict(snapshot["transactions"]),
+        }
 
     def state(self, tx):
-        return self.ledger.state(tx)
+        return self.snapshot()["transactions"].get(tx)
 
     def checkpoint(self):
         with self._lock:
@@ -88,6 +118,7 @@ class LocalCustody:
             ):
                 raise ClosureError("BINDING_NOT_ISSUED_BY_AUTHORITY")
             event_hash = self.ledger.append(event, expected_head)
+            self._cache = None
             if body["state"] == "EXECUTING":
                 meta["binding"] = body["binding"]
             if body["state"] == "BASELINED":
@@ -102,14 +133,26 @@ class LocalCustody:
             self._sign_checkpoint(body["sequence"], event_hash)
             return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
 
+    def view(self, tx):
+        """One verified ledger snapshot projected for one transaction (state + technical packet)."""
+        snapshot = self.snapshot()
+        return {
+            "verified_head": snapshot["head"],
+            "sequence": snapshot["sequence"],
+            "state": snapshot["transactions"].get(tx),
+            "packet": snapshot["packets"].get(tx),
+        }
+
     def listing(self):
         """Every custody transaction, including staged proposals not yet in the ledger.
 
         States and verdicts come from one verified ledger snapshot; a proposal that the owner
         has not approved is reported as PROPOSED with approved=False and no verdict.
         """
-        summary = self.ledger.summary()
-        packets = self.ledger.technical_packets()
+        snapshot = self.snapshot()
+        summary = {k: snapshot[k] for k in ("transactions", "sequence")}
+        summary["verified_head"] = snapshot["head"]
+        packets = snapshot["packets"]
         items = []
         folder = self.root / "transactions"
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -133,7 +176,7 @@ class LocalCustody:
 
     def technical_packet(self, tx):
         """The ledger's authoritative verdict packet for ``tx`` (None until a verdict is admitted)."""
-        return self.ledger.technical_packet(tx)
+        return self.snapshot()["packets"].get(tx)
 
     def audit_export(self, from_sequence=1, limit=1000):
         """Public replay seam: contracts, a bounded page of signed events, and a custodian
@@ -245,6 +288,7 @@ class LocalCustody:
             frozen = freeze(meta["contract"], approval, self.trust)
             meta["approval"] = approval
             self.ledger.register(frozen)
+            self._cache = None
             self._save(meta)
             return {"transaction_id": tx, "contract_hash": frozen.hash}
 
