@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--key-file", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--trust-hash", required=True)
+    parser.add_argument("--expected-archive-hash", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -79,7 +80,9 @@ def main():
         )
         return result
 
-    first = run(base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash])
+    first = run(
+        base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash, args.expected_archive_hash]
+    )
     assert first.returncode == 2 and "BACKUP_STORAGE_ERROR" in first.stdout, first.stderr
     check = (
         "from closure_engine.runtime.container_bootstrap import provision; "
@@ -97,6 +100,7 @@ def main():
             "agentic-closure-engine:0.3.0",
             "restore",
             args.trust_hash,
+            args.expected_archive_hash,
         ]
     )
     assert complete.returncode == 0 and json.loads(complete.stdout)["result"] == "Worked", complete.stderr
@@ -110,6 +114,7 @@ def main():
             "agentic-closure-engine:0.3.0",
             "restore",
             args.trust_hash,
+            args.expected_archive_hash,
         ]
     )
     assert again.returncode == 0 and json.loads(again.stdout)["result"] == "AlreadyRestored", again.stderr

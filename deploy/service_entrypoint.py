@@ -16,12 +16,33 @@ if mode in {"backup", "restore"}:
 
     expected_pin = sys.argv[2]
     try:
+        archive_path = Path("/backup/snapshot.ace")
+        if mode == "restore":
+            if len(sys.argv) != 4:
+                raise ClosureError("RESTORE_ARCHIVE_DIGEST_REQUIRED")
+            # Freeze the exact encrypted bytes in this container's private tmpfs
+            # before hashing/decrypting, rather than reopen the host input later.
+            import hashlib
+            import tempfile
+
+            verified = Path(tempfile.mkdtemp(prefix="ace-encrypted-input-")) / "snapshot.ace"
+            expected_digest = sys.argv[3].lower()
+            hasher = hashlib.sha256()
+            with archive_path.open("rb") as source, verified.open("xb") as destination:
+                for chunk in iter(lambda: source.read(65536), b""):
+                    hasher.update(chunk)
+                    destination.write(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if hasher.hexdigest() != expected_digest:
+                raise ClosureError("RESTORE_ARCHIVE_DIGEST_MISMATCH")
+            archive_path = verified
         result = (
             backup("/volumes", "/backup", expected_pin, "/backup-key/snapshot.key")
             if mode == "backup"
             else restore(
                 "/volumes",
-                "/backup/snapshot.ace",
+                archive_path,
                 "/backup-key/snapshot.key",
                 expected_pin,
                 read_json("/anchor/checkpoint.json", "RESTORE_CHECKPOINT_REQUIRED"),
