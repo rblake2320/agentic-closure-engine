@@ -160,7 +160,11 @@ class Runtime:
                 or ".." in transaction_id
             ):
                 raise ClosureError("INVALID_TRANSACTION_ID")
-        elif not parent_transaction or transaction_id != parent_transaction + "/recovery":
+        elif not parent_transaction or not (
+            transaction_id == parent_transaction + "/recovery"
+            or isinstance(transaction_id, str)
+            and re.fullmatch(r"recovery-[0-9a-f]{24}", transaction_id)
+        ):
             raise ClosureError("INVALID_RECOVERY_ID")
         self._identity("actor")
         artifact = _bounded_bytes(artifact)
@@ -258,9 +262,19 @@ class Runtime:
             "parent_packet_hash": digest(packet),
             "intent": "Restore baseline after " + packet["payload"]["body"]["verdict"] + " for " + tx,
         }
+        child_id = tx + "/recovery"
+        if self.custody.exists(child_id):
+            # Older ingress allowed unrelated actor proposals in this namespace. Preserve that
+            # evidence and use a new safe internal ID; custody binds it to this parent explicitly.
+            for _ in range(3):
+                child_id = "recovery-" + secrets.token_hex(12)
+                if not self.custody.exists(child_id):
+                    break
+            else:
+                raise ClosureError("RECOVERY_ID_COLLISION")
         return self.propose(
             meta["target_id"],
-            tx + "/recovery",
+            child_id,
             self.store.get(parent_contract["baseline_hash"]),
             intent=inherited["intent"],
             duration_ms=window["duration_ms"],

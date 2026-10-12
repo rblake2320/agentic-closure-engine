@@ -28,7 +28,9 @@ separate request-body bound. Over either bound the API returns JSON with status
 413. New external transaction IDs use ASCII letters/digits and `.`, `_`, `-`,
 begin with a letter/digit, are at most 128 characters, and exclude `..`. `/recovery`
 identifiers are reserved for server-created children; historical children remain
-readable and verifiable.
+readable and verifiable. If an old unrelated proposal already occupies a parent's
+legacy recovery identifier, the server preserves it and generates a new safe child ID.
+Custody records the immutable parent/child relationship and allows one active child.
 
 The console's "global ledger" sequence and head represent all transactions.
 Transaction status exposes `allowed_actions` and recovery eligibility; the console

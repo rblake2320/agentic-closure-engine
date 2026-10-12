@@ -142,3 +142,50 @@ def test_unsupported_method_returns_json_405_allow(api):
 def test_full_oversized_http_upload_returns_json_413(api):
     status, value = call(api, "POST", "/api/v1/transactions", {"padding": "x" * 2097152}, RELEASE)
     assert (status, value.get("error")) == (413, "INPUT_TOO_LARGE")
+
+
+@pytest.mark.parametrize("document", [None, 0, [], "text"])
+def test_non_object_reference_artifact_is_typed_rejection_without_change(world, document):
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    client = runtime._client("shop/api", with_token=True)
+    before = client.state()
+    status, raw = client.deploy(json.dumps(document).encode(), before["artifact_hash"], "format-check")
+    assert (status, json.loads(raw)["error"]) == (400, "INVALID_REFERENCE_ARTIFACT")
+    assert client.state() == before
+
+
+def test_occupied_historical_recovery_name_uses_safe_child_preserving_record(world):
+    from test_runtime_e2e import run_to_verdict_child
+
+    from closure_engine.protocol import canonical
+    from closure_engine.runtime.custody import META_FIELDS
+
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    # Preserve a real historical actor proposal created with the old ingress policy.
+    runtime.propose(
+        "shop/api", "legacy-seed", artifact(2), intent="historical proposal", expect={"primary": 2}, **WINDOW
+    )
+    seed = runtime.custody.tx("legacy-seed")
+    proposal = {k: seed[k] for k in META_FIELDS}
+    collision = "collision-parent/recovery"
+    proposal["transaction_id"] = collision
+    proposal["contract"] = dict(
+        proposal["contract"],
+        transaction_id=collision,
+        contract_id=collision,
+        attempt_id=collision + "/attempt-1",
+    )
+    runtime.custody.create_tx(proposal)
+    preserved = canonical(runtime.custody.tx(collision))
+    _, result = run_to_verdict(runtime, "collision-parent", artifact(3, other="changed"))
+    assert result["verdict"] == "DISPROVEN"
+    child = runtime.begin_recovery("collision-parent")["transaction_id"]
+    assert child.startswith("recovery-") and "/" not in child
+    assert runtime.custody.tx(child)["parent_transaction"] == "collision-parent"
+    assert runtime.custody.tx("collision-parent")["child_transaction"] == child
+    _, result = run_to_verdict_child(runtime, child)
+    assert result["verdict"] == "PROVEN"
+    assert runtime.complete_recovery("collision-parent")["state"] == "RECOVERED"
+    assert canonical(runtime.custody.tx(collision)) == preserved

@@ -111,7 +111,12 @@ class TargetClient:
 def validate_reference_artifact(raw):
     document = strict_loads(raw)
     routes = document.get("routes") if isinstance(document, dict) else None
-    if set(document) != {"routes"} or not isinstance(routes, dict) or not routes:
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"routes"}
+        or not isinstance(routes, dict)
+        or not routes
+    ):
         raise ClosureError("INVALID_REFERENCE_ARTIFACT")
     if any(not isinstance(p, str) or not p.startswith("/") or p.startswith("/ace/") for p in routes):
         raise ClosureError("INVALID_REFERENCE_ARTIFACT")
