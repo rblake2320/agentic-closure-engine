@@ -171,6 +171,8 @@ def export_bundle(custody, transaction):
         "transaction_id": transaction,
         "scope": {
             "mode": "transaction",
+            "minimum_verifier_version": "0.3.1",
+            "verification_notice": "Use ACE 0.3.1 or later with an independently supplied trust pin.",
             "transactions": scope,
             "global_chain": "SIGNATURES_HASH_LINKS_CHRONOLOGY_CHECKPOINT",
             "foreign_transaction_semantics": "NOT_EVALUATED",
@@ -262,6 +264,8 @@ def verify_bundle(
     scope = _required_scope(proof["pages"][0]["contracts"], events, proof["transaction_id"])
     expected_scope = {
         "mode": "transaction",
+        "minimum_verifier_version": "0.3.1",
+        "verification_notice": "Use ACE 0.3.1 or later with an independently supplied trust pin.",
         "transactions": scope,
         "global_chain": "SIGNATURES_HASH_LINKS_CHRONOLOGY_CHECKPOINT",
         "foreign_transaction_semantics": "NOT_EVALUATED",

@@ -130,7 +130,11 @@ def test_service_client_ignores_environment_proxies_and_still_works(monkeypatch,
     monkeypatch.delenv("no_proxy", raising=False)
     api = serve(ApiServer(("127.0.0.1", 0), None, CREDENTIALS))
     client = ServiceClient(f"http://127.0.0.1:{api.server_address[1]}", TOKEN)
-    assert client.call("GET", "/api/v1/whoami") == {"principal": "t", "roles": ["viewer"]}
+    assert client.call("GET", "/api/v1/whoami") == {
+        "principal": "t",
+        "roles": ["viewer"],
+        "approval_mode": "role-scoped",
+    }
     assert recorder.seen == []
     for s in (api, recorder):
         s.shutdown()

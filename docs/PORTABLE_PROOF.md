@@ -9,6 +9,9 @@ evidence that the admitted 0.3.1 result was false. Never substitute that older r
 the authority's verdict or claim that the 0.3.0 binary supports the repaired format.
 The 0.3.1 runtime/verifier retains old signed ledger records and historical safe slash IDs
 unchanged; actual old/new installed HTTP migration is covered by the release gate.
+Every downloaded v2 proof also carries the minimum-version notice in `portable.scope`.
+The verifier checks that notice against its required profile, rather than relying only
+on a separate web page that the recipient might not have received.
 
 The authenticated `GET /api/v1/transactions/{id}/bundle` download includes the frozen contract,
 owner approval, run binding, observation/ingestion records and deployment receipts. Its
