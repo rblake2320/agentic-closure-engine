@@ -413,9 +413,14 @@ def test_p3_one_transactions_proof_does_not_disclose_another_transactions_artifa
 
     secret = artifact(12, other="customer-b-private-config")
     live.drive("tenant-b", secret, {"primary": 12})
+    # v3: an unrelated change in between, so tenant-b's artifact is NOT tenant-a's baseline. In the
+    # a203ee0 order (b then a) b's deployed bytes WERE a's baseline, which a's proof legitimately needs.
+    live.drive("tenant-c", artifact(13), {"primary": 13})
     live.drive("tenant-a", artifact(8), {"primary": 8})
     status, bundle = live.call("GET", "/api/v1/transactions/tenant-a/bundle", token=VIEWER)
     assert status == 200, bundle
+    assert bundle["contract"]["baseline_hash"] != digest(secret)  # guard: b is unrelated to a
+    assert "portable" in bundle, sorted(bundle)  # no vacuous pass on a build without portable proofs
     evidence = bundle.get("portable", {}).get("evidence", {})
     assert digest(secret) not in evidence, "tenant-b's artifact bytes ship inside tenant-a's proof"
     assert base64.b64encode(secret).decode() not in json.dumps(bundle)
