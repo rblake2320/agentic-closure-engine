@@ -137,3 +137,8 @@ def test_unsupported_method_returns_json_405_allow(api):
     assert response.getheader("Allow") == "GET, POST"
     assert json.loads(response.read())["error"] == "METHOD_NOT_ALLOWED"
     connection.close()
+
+
+def test_full_oversized_http_upload_returns_json_413(api):
+    status, value = call(api, "POST", "/api/v1/transactions", {"padding": "x" * 2097152}, RELEASE)
+    assert (status, value.get("error")) == (413, "INPUT_TOO_LARGE")
