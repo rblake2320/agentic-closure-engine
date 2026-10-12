@@ -61,7 +61,23 @@ def _input_references(manifest):
     yield contract["baseline_hash"], "opaque"
     yield manifest["binding"]["payload"]["body"]["artifact_hash"], "opaque"
     for pair in manifest["records"]:
-        yield pair["observation"]["payload"]["body"]["evidence_hash"], "opaque"
+        observation = pair.get("observation", {}) if isinstance(pair, dict) else {}
+        payload = observation.get("payload", {}) if isinstance(observation, dict) else {}
+        body = payload.get("body", {}) if isinstance(payload, dict) else {}
+        if not isinstance(body, dict) or any(
+            body.get(field) != expected
+            for field, expected in (
+                ("transaction_id", contract["transaction_id"]),
+                ("attempt_id", contract["attempt_id"]),
+                ("target_id", contract["target_id"]),
+                ("contract_hash", digest(contract)),
+            )
+        ):
+            # Retained rejected inputs remain available as signed input metadata. A foreign
+            # observation rejected before evidence admission must not authorize raw-byte export.
+            continue
+        if "evidence_hash" in body:
+            yield body["evidence_hash"], "opaque"
 
 
 def export_bundle(custody, transaction):

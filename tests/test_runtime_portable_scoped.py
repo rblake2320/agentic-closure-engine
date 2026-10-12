@@ -116,6 +116,16 @@ def test_F2_other_target_artifact_canary_never_in_requested_bundle(two_targets):
     assert verify_bundle(bundle, pin)["closure"]["state"] == "ACCEPTED"
 
 
+def test_foreign_rejected_input_metadata_does_not_authorize_raw_evidence_traversal(two_targets):
+    from closure_engine.runtime.portable import _input_references
+
+    runtime, _, bundle, _, raw_b, _ = two_targets
+    inputs = {key: value for key, value in bundle.items() if key != "portable"}
+    inputs["records"] = bundle["records"] + runtime.custody.records("tenant-b-change")
+    references = {reference for reference, _ in _input_references(inputs)}
+    assert digest(raw_b) not in references
+
+
 def test_scoped_proof_declares_foreign_semantics_not_evaluated(two_targets):
     _, pin, bundle, _, _, _ = two_targets
     result = verify_bundle(bundle, pin)
