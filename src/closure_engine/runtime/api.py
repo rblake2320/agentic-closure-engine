@@ -8,6 +8,7 @@ that signs a caller-supplied object or changes evaluator/probe definitions.
 """
 
 import base64
+import json
 import mimetypes
 import re
 from pathlib import Path
@@ -25,7 +26,7 @@ from .rpc import (
     validate_credentials,
 )
 
-TX = r"([A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*)"
+TX = r"([A-Za-z0-9._:-]+(?:/recovery)*)"
 ACTIONS = {
     "approve": ("owner", "approve"),
     "accept": ("owner", "accept"),
@@ -44,11 +45,17 @@ STATUS = {
     "TARGET_NOT_ENROLLED": 404,
     "INTENT_UNKNOWN": 404,
     "ROUTE_NOT_FOUND": 404,
+    "METHOD_NOT_ALLOWED": 405,
     "TRANSACTION_ALREADY_EXISTS": 409,
     "ALREADY_APPROVED": 409,
     "RUN_ALREADY_BOUND": 409,
     "DEPLOYMENT_ALREADY_ATTEMPTED": 409,
     "NOT_CLOSABLE": 409,
+    "TRANSACTION_TERMINAL": 409,
+    "RECOVERY_NOT_REQUIRED": 409,
+    "OBSERVATION_NOT_ALLOWED": 409,
+    "ARTIFACT_TOO_LARGE": 413,
+    "INPUT_TOO_LARGE": 413,
     "OBSERVATION_WINDOW_OPEN": 409,
     "STALE_LEDGER_HEAD": 409,
     "ILLEGAL_TRANSITION": 409,
@@ -95,6 +102,32 @@ class _Handler(ServiceHandler):
     def do_POST(self):
         self._handle("POST")
 
+    def do_DELETE(self):
+        self._handle("DELETE")
+
+    def do_PUT(self):
+        self._handle("PUT")
+
+    def do_PATCH(self):
+        self._handle("PATCH")
+
+    def do_OPTIONS(self):
+        self._handle("OPTIONS")
+
+    def send_json(self, status, value=None, raw=None, content_type="application/json"):
+        if status != 405:
+            return super().send_json(status, value, raw, content_type)
+        body = json.dumps(value, sort_keys=True).encode()
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Allow", "GET, POST")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle(self, method):
         if not self.host_ok():
             return self.send_json(403, {"error": "HOST_OR_ORIGIN_REJECTED"})
@@ -112,9 +145,15 @@ class _Handler(ServiceHandler):
         except RoleDenied as exc:
             return self.send_json(403, {"error": "ROLE_REQUIRED", "role": exc.role})
         except ClosureError as exc:
-            return self.send_json(
-                STATUS.get(exc.code, 400), {"error": exc.code, "detail": public_detail(exc)}
-            )
+            if STATUS.get(exc.code) == 413:
+                self.close_connection = True
+            detail = public_detail(exc)
+            while detail.startswith(exc.code):
+                detail = detail[len(exc.code) :].lstrip(": ")
+            value = {"error": exc.code}
+            if detail:
+                value["detail"] = detail
+            return self.send_json(STATUS.get(exc.code, 400), value)
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "RUNTIME_ERROR", "type": type(exc).__name__})
 

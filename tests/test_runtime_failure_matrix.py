@@ -227,6 +227,7 @@ def test_crash_after_intent_before_side_effect_reconciles_not_deployed(world):
             "status": "COMPLETED",
             "receipt": "NOT_DEPLOYED",
             "receipt_hash": resolved[0]["receipt_hash"],
+            "reason_code": "TARGET_STATE_UNCHANGED",
         }
     ]
     assert TargetClient(deployment.target("shop/api")).state()["artifact_hash"] == digest(artifact(1))

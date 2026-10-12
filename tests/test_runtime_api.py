@@ -117,7 +117,7 @@ def test_role_gating_and_no_caller_clock(api):
 def test_full_transaction_through_api(api):
     body = {
         "target_id": "shop/api",
-        "transaction_id": "api-release/7",
+        "transaction_id": "api-release-7",
         "artifact_base64": base64.b64encode(artifact(7)).decode(),
         "expect": {"primary": 7},
         "intent": "Release seven",
@@ -128,18 +128,18 @@ def test_full_transaction_through_api(api):
     }
     assert call(api, "POST", "/api/v1/transactions", body, RELEASE)[0] == 201
     for action in ("approve", "freeze", "baseline"):
-        status, value = call(api, "POST", f"/api/v1/transactions/api-release/7/{action}", None, RELEASE)
+        status, value = call(api, "POST", f"/api/v1/transactions/api-release-7/{action}", None, RELEASE)
         assert status == 200, value
-    status, result = call(api, "POST", "/api/v1/transactions/api-release/7/run", None, RELEASE)
+    status, result = call(api, "POST", "/api/v1/transactions/api-release-7/run", None, RELEASE)
     assert status == 200 and result["verdict"] == "PROVEN", result
-    assert call(api, "POST", "/api/v1/transactions/api-release/7/accept", None, VIEWER)[0] == 403
+    assert call(api, "POST", "/api/v1/transactions/api-release-7/accept", None, VIEWER)[0] == 403
     assert (
-        call(api, "POST", "/api/v1/transactions/api-release/7/accept", None, RELEASE)[1]["state"]
+        call(api, "POST", "/api/v1/transactions/api-release-7/accept", None, RELEASE)[1]["state"]
         == "ACCEPTED"
     )
-    status, view = call(api, "GET", "/api/v1/transactions/api-release/7", token=VIEWER)
+    status, view = call(api, "GET", "/api/v1/transactions/api-release-7", token=VIEWER)
     assert status == 200 and view["state"] == "ACCEPTED"
-    status, bundle = call(api, "GET", "/api/v1/transactions/api-release/7/bundle", token=VIEWER)
+    status, bundle = call(api, "GET", "/api/v1/transactions/api-release-7/bundle", token=VIEWER)
     assert status == 200 and bundle["mode"] == "runtime"
     assert call(api, "GET", "/api/v1/transactions/nope", token=VIEWER)[0] == 404
 

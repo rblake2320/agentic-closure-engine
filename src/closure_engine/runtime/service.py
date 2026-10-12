@@ -9,6 +9,7 @@ when every role runs as its own service and only custody holds the custodian key
 Broker-private state: intents/<intent>.json write-ahead records, targets/<slug>.token.
 """
 
+import re
 import secrets
 import time
 from pathlib import Path
@@ -16,7 +17,6 @@ from pathlib import Path
 from ..contracts import freeze
 from ..crypto import sign
 from ..protocol import (
-    MAX_BYTES,
     POLICY_HASH,
     ClosureError,
     canonical,
@@ -34,12 +34,27 @@ from .deployment import Deployment
 from .files import create_json, read_json, replace_json
 from .target import TargetClient, json_pointer
 
+MAX_ARTIFACT_BYTES = 524_288
+EXTERNAL_TRANSACTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+TERMINAL_STATES = {
+    "PROVEN",
+    "DISPROVEN",
+    "PARTIALLY_PROVEN",
+    "INDETERMINATE",
+    "ACCEPTED",
+    "RECOVERED",
+    "RECOVERY_FAILED",
+}
+
+
 SUBJECT = ("transaction_id", "attempt_id", "contract_hash", "artifact_hash", "target_id")
 
 
 def _bounded_bytes(raw, code="ARTIFACT_INVALID"):
-    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_BYTES:
+    if not isinstance(raw, bytes) or not raw:
         raise ClosureError(code)
+    if len(raw) > MAX_ARTIFACT_BYTES:
+        raise ClosureError("ARTIFACT_TOO_LARGE", "decoded artifact exceeds 524288 bytes")
     return raw
 
 
@@ -138,6 +153,15 @@ class Runtime:
         target serves today is read as the restoration criterion. Both are frozen into the
         evaluator bundle the owner approves; the verifier confirms the current value at baseline.
         """
+        if parent is None:
+            if (
+                not isinstance(transaction_id, str)
+                or not EXTERNAL_TRANSACTION_ID.fullmatch(transaction_id)
+                or ".." in transaction_id
+            ):
+                raise ClosureError("INVALID_TRANSACTION_ID")
+        elif not parent_transaction or transaction_id != parent_transaction + "/recovery":
+            raise ClosureError("INVALID_RECOVERY_ID")
         self._identity("actor")
         artifact = _bounded_bytes(artifact)
         if self.custody.exists(transaction_id):
@@ -358,6 +382,11 @@ class Runtime:
     def complete_recovery(self, tx):
         """Authority: submit the closed child packet; the kernel decides RECOVERED/FAILED."""
         meta = self._tx(tx)
+        state = self.custody.state(tx)
+        if state in TERMINAL_STATES:
+            raise ClosureError("TRANSACTION_TERMINAL", str(state))
+        if state != "RECOVERY_REQUIRED":
+            raise ClosureError("RECOVERY_NOT_REQUIRED", str(state))
         child = self._tx(meta["child_transaction"]) if meta.get("child_transaction") else {}
         packet = child.get("verdict_packet")
         status = recovery_status(
@@ -508,6 +537,11 @@ class Runtime:
         """
         verifier = self._identity("verifier")
         meta = self._tx(tx)
+        state = self.custody.state(tx)
+        if state in TERMINAL_STATES or state == "RECOVERY_REQUIRED":
+            raise ClosureError("TRANSACTION_TERMINAL", str(state))
+        if state not in {"EXECUTING", "VERIFYING", "OBSERVING"}:
+            raise ClosureError("OBSERVATION_NOT_ALLOWED", str(state))
         if meta["binding"] is None:
             raise ClosureError("RUN_BINDING_REQUIRED", tx)
         bundle = self._evaluator(meta)  # refuses if the enrolled probe profile changed
@@ -625,15 +659,33 @@ class Runtime:
             raise ClosureError("INTENT_NOT_PENDING", intent["status"])
         if intent["observed_current"] != intent["expected_current"]:
             # Never act on a target whose current state differs from the approved precondition.
-            return self._finish_intent(intent, "NOT_DEPLOYED")
+            return self._finish_intent(intent, "NOT_DEPLOYED", reason_code="PRECONDITION_FAILED")
         client = self._client(intent["target_id"], with_token=True)
         artifact = self.store.get(intent["artifact_hash"])
         try:
-            status, _ = client.deploy(artifact, intent["expected_current"], intent_id)
-        except ClosureError:
+            status, response = client.deploy(artifact, intent["expected_current"], intent_id)
+        except ClosureError as exc:
+            replace_json(self._intent_path(intent_id), dict(intent, reason_code=exc.code))
             return self.reconcile_intent(intent_id)
+        reason = None
         if status == 412:
-            return self._finish_intent(intent, "NOT_DEPLOYED")
+            reason = "PRECONDITION_FAILED"
+        elif status in {401, 403}:
+            reason = "AUTHORIZATION_DENIED"
+        elif status != 200:
+            try:
+                target_error = strict_loads(response).get("error")
+            except (ClosureError, AttributeError):
+                target_error = None
+            reason = (
+                "ARTIFACT_FORMAT_INVALID"
+                if target_error == "INVALID_REFERENCE_ARTIFACT"
+                else "DEPLOYMENT_COMMAND_FAILED"
+            )
+        intent = dict(intent, target_http_status=status)
+        if reason:
+            intent["reason_code"] = reason
+        replace_json(self._intent_path(intent_id), intent)
         return self.reconcile_intent(intent_id)
 
     def reconcile_intent(self, intent_id):
@@ -652,8 +704,10 @@ class Runtime:
         if current == intent["artifact_hash"]:
             return self._finish_intent(intent, "EXECUTED")
         if current == intent["expected_current"]:
-            return self._finish_intent(intent, "NOT_DEPLOYED")
-        return self._finish_intent(intent, "UNKNOWN")
+            return self._finish_intent(
+                intent, "NOT_DEPLOYED", reason_code=intent.get("reason_code", "TARGET_STATE_UNCHANGED")
+            )
+        return self._finish_intent(intent, "UNKNOWN", reason_code="TARGET_STATE_CONFLICT")
 
     def reconcile(self):
         """Broker restart path: resolve every pending intent."""
@@ -664,7 +718,7 @@ class Runtime:
                 results.append(self.reconcile_intent(path.stem))
         return {"reconciled": results}
 
-    def _finish_intent(self, intent, status):
+    def _finish_intent(self, intent, status, *, reason_code=None):
         binding = self._tx(intent["transaction_id"])["binding"]["payload"]["body"]
         now = self.clock.now()
         body = {
@@ -674,6 +728,10 @@ class Runtime:
             "status": status,
             "recorded_at": now,
         }
+        if reason_code:
+            body["reason_code"] = reason_code
+        if "target_http_status" in intent:
+            body["target_http_status"] = intent["target_http_status"]
         receipt = sign(self._identity("broker"), "action-receipt", body, now)
         receipt_hash = self.custody.submit_receipt(intent["transaction_id"], receipt)["receipt_hash"]
         if status != "UNKNOWN":
@@ -687,6 +745,7 @@ class Runtime:
             "status": final,
             "receipt": status,
             "receipt_hash": receipt_hash,
+            **{k: body[k] for k in ("reason_code", "target_http_status") if k in body},
         }
 
     # ----- single-process orchestration (development and single-host installs) -------------
@@ -755,6 +814,7 @@ class Runtime:
             "ledger_head": view["verified_head"],
             "ledger_sequence": view["sequence"],
             **self._closure_fields(view["packet"]),
+            **operational_view(self.custody, tx, view["state"] or "PROPOSED", view["packet"]),
         }
 
     def export_bundle(self, tx):
@@ -793,4 +853,39 @@ def contract_view(custody, meta):
         "approval": meta["approval"],
         "artifact_hash": meta["artifact_hash"],
         "parent_transaction": meta["parent_transaction"],
+    }
+
+
+def operational_view(custody, tx, state, packet):
+    """Authoritative operation eligibility and signed broker result, separate from verdict."""
+    actions = {
+        "PROPOSED": ["approve"],
+        "DRAFT": ["approve"],
+        "APPROVED": ["freeze"],
+        "FROZEN": ["baseline"],
+        "BASELINED": ["run", "bind"],
+        "EXECUTING": ["deploy", "observe", "close"],
+        "VERIFYING": ["observe", "close"],
+        "OBSERVING": ["observe", "close"],
+        "PROVEN": ["accept"],
+        "RECOVERY_REQUIRED": ["recover", "recover-complete"],
+    }.get(state, [])
+    body = packet["payload"]["body"] if packet else {}
+    receipt_bodies = [r["payload"]["body"] for r in custody.receipts(tx)]
+    receipt_bodies.sort(key=lambda r: (r["recorded_at"], r["receipt_id"]))
+    receipt = receipt_bodies[-1] if receipt_bodies else None
+    return {
+        "allowed_actions": actions,
+        "recovery": {
+            "required": body.get("recovery_required", False),
+            "eligible": state == "RECOVERY_REQUIRED",
+            "reason": "DEPLOYMENT_NOT_PERFORMED" if receipt and receipt["status"] == "NOT_DEPLOYED" else None,
+        },
+        "deployment": None
+        if receipt is None
+        else {
+            "receipt": receipt["status"],
+            **{k: receipt[k] for k in ("reason_code", "target_http_status") if k in receipt},
+        },
+        "ledger_scope": "global",
     }
