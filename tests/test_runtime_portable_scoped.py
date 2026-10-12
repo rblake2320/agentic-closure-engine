@@ -2,10 +2,12 @@
 
 import base64
 import copy
+import hashlib
 import json
 import threading
 
 import pytest
+from test_runtime_api import TOKENS, VIEWER, call
 from test_independent_boundary_review import _fail_sample
 from test_ledger import begin, event, packet
 from test_runtime_e2e import CHECKS, WINDOW, free_port
@@ -106,7 +108,9 @@ def two_targets(tmp_path_factory):
 
 
 def test_F2_other_target_artifact_canary_never_in_requested_bundle(two_targets):
-    _, pin, bundle, raw_a, raw_b, _ = two_targets
+    from closure_engine.runtime.api import ApiServer
+
+    runtime, pin, bundle, raw_a, raw_b, _ = two_targets
     evidence = bundle["portable"]["evidence"]
     decoded = [base64.b64decode(item) for item in evidence.values()]
     assert raw_a in decoded
@@ -114,6 +118,23 @@ def test_F2_other_target_artifact_canary_never_in_requested_bundle(two_targets):
     assert digest(raw_b) not in evidence
     assert not any(CANARY_B.encode() in item for item in decoded)
     assert verify_bundle(bundle, pin)["closure"]["state"] == "ACCEPTED"
+    credentials = {hashlib.sha256(token.encode()).hexdigest(): value for token, value in TOKENS.items()}
+    server = ApiServer(("127.0.0.1", 0), runtime, credentials)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        path = "/api/v1/transactions/tenant-a-change/bundle"
+        assert call(port, "GET", path)[0] == 401
+        status, downloaded = call(port, "GET", path, token=VIEWER)
+        assert status == 200
+        assert digest(raw_b) not in downloaded["portable"]["evidence"]
+        assert not any(
+            CANARY_B.encode() in base64.b64decode(raw) for raw in downloaded["portable"]["evidence"].values()
+        )
+        assert verify_bundle(downloaded, pin)["closure"]["state"] == "ACCEPTED"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_foreign_rejected_input_metadata_does_not_authorize_raw_evidence_traversal(two_targets):
