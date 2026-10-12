@@ -7,9 +7,9 @@ import json
 import threading
 
 import pytest
-from test_runtime_api import TOKENS, VIEWER, call
 from test_independent_boundary_review import _fail_sample
 from test_ledger import begin, event, packet
+from test_runtime_api import TOKENS, VIEWER, call
 from test_runtime_e2e import CHECKS, WINDOW, free_port
 
 from closure_engine.crypto import sign
