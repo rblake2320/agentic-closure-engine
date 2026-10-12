@@ -193,7 +193,13 @@ class _Handler(ServiceHandler):
         runtime = self.server.runtime
         if method == "GET":
             if path == "/api/v1/whoami":
-                return 200, principal
+                mode = (
+                    "single-operator-administration"
+                    if {"actor", "owner"} <= set(principal["roles"])
+                    else "role-scoped"
+                )
+                # This is disclosure, not a grant or a human-separation certificate.
+                return 200, dict(principal, approval_mode=mode)
             if path == "/api/v1/status":
                 return 200, runtime.status()
             if path == "/api/v1/audit-export":

@@ -87,7 +87,10 @@ def test_authentication_and_origin_controls(api):
     assert (
         call(api, "GET", "/api/v1/status", token=VIEWER, headers={"Origin": "http://evil.example"})[0] == 403
     )
-    assert call(api, "GET", "/api/v1/whoami", token=VIEWER) == (200, TOKENS[VIEWER])
+    assert call(api, "GET", "/api/v1/whoami", token=VIEWER) == (
+        200,
+        dict(TOKENS[VIEWER], approval_mode="role-scoped"),
+    )
 
 
 def test_static_ui_is_same_origin_and_cannot_escape(api):
