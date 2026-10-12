@@ -18,31 +18,58 @@ from ..crypto import TrustStore
 from ..protocol import ACCEPTED_POLICIES, MAX_BYTES, ClosureError, canonical, digest, strict_loads
 from .export import replay_audit_export
 
-VERSION = "ace.portable.v1"
+VERSION = "ace.portable.v2"
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 MAX_OBJECTS = 8192
 HASH = re.compile(r"sha256:[0-9a-f]{64}")
 RUN_FIELDS = {"mode", "contract", "approval", "binding", "records", "receipts"}
-PROOF_FIELDS = {"version", "transaction_id", "trust", "pages", "evaluators", "policies", "evidence"}
+PROOF_FIELDS = {"version", "transaction_id", "trust", "pages", "evaluators", "policies", "evidence", "scope"}
 
 
-def _hashes(value):
-    if isinstance(value, str) and HASH.fullmatch(value):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _hashes(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _hashes(item)
+def _required_scope(contracts, events, transaction):
+    """Requested subject plus cryptographically linked recovery ancestors/children only."""
+    by_transaction = {item["contract"]["transaction_id"]: item for item in contracts}
+    packet_subjects = {}
+    for event in events:
+        packet = event["payload"]["body"].get("packet")
+        if packet:
+            packet_subjects[digest(packet)] = packet["payload"]["body"]["transaction_id"]
+    scope, pending = set(), [transaction]
+    while pending:
+        subject = pending.pop()
+        if subject in scope:
+            continue
+        if subject not in by_transaction:
+            raise ClosureError("EXPORT_SCOPE_MISMATCH")
+        scope.add(subject)
+        parent = by_transaction[subject]["contract"]["parent_packet_hash"]
+        if parent is not None:
+            if parent not in packet_subjects:
+                raise ClosureError("RECOVERY_PARENT_MISSING")
+            pending.append(packet_subjects[parent])
+        for event in events:
+            body = event["payload"]["body"]
+            if body["transaction_id"] == subject and body.get("recovery_contract"):
+                pending.append(body["recovery_contract"]["transaction_id"])
+    return sorted(scope)
+
+
+def _input_references(manifest):
+    """Follow defined custody relationships, never arbitrary hashes inside artifact/probe bytes."""
+    contract = manifest["contract"]
+    yield contract["evaluator_hash"], "opaque"
+    yield contract["baseline_hash"], "opaque"
+    yield manifest["binding"]["payload"]["body"]["artifact_hash"], "opaque"
+    for pair in manifest["records"]:
+        yield pair["observation"]["payload"]["body"]["evidence_hash"], "opaque"
 
 
 def export_bundle(custody, transaction):
     """Export an unchanged evaluator input plus all public material needed for offline replay.
 
-    The global signed ledger is required: its transaction events are linked through other
-    transactions. A selected transaction slice alone cannot authenticate those intervening
-    events. A concurrent ledger append causes an explicit retryable snapshot-change error.
+    Global signed envelopes authenticate membership/order but do not pull foreign artifact
+    bytes into a transaction download. Raw evidence is scoped to the selected transaction
+    and required recovery relationships. Foreign outcome semantics remain NOT_EVALUATED.
     """
     meta = custody.tx(transaction)
     if meta["binding"] is None:
@@ -72,31 +99,45 @@ def export_bundle(custody, transaction):
     trust = TrustStore.from_dict(pages[0]["trust"])
     if trust.hash != pages[0]["trust_hash"]:
         raise ClosureError("EXPORT_TRUST_MISMATCH")
+    events = [event for page in pages for event in page["events"]]
+    scope = _required_scope(pages[0]["contracts"], events, transaction)
+    scoped_contracts = [item for item in pages[0]["contracts"] if item["contract"]["transaction_id"] in scope]
+    # Foreign signed event metadata is retained for chain authentication. Foreign contracts,
+    # evaluator expectations and raw artifacts/observations are not part of this download.
+    for page in pages:
+        page["contracts"] = scoped_contracts
     evidence, visited = {}, set()
-    todo = list(_hashes([bundle, pages]))
-    while todo:
-        reference = todo.pop()
-        if reference in visited:
+    todo = list(_input_references(bundle))
+    for item in scoped_contracts:
+        todo.extend(
+            [(item["contract"]["evaluator_hash"], "opaque"), (item["contract"]["baseline_hash"], "opaque")]
+        )
+    for event in events:
+        body = event["payload"]["body"]
+        if body["transaction_id"] not in scope:
             continue
-        visited.add(reference)
-        try:
-            raw = custody.evidence_get(reference)
-        except ClosureError as exc:
-            # Inline signed objects, policy IDs and chain heads are digests, not store objects.
-            # Required missing store objects are independently rejected by replay below.
-            if exc.code == "EVIDENCE_MISSING":
-                continue
-            raise
+        todo.extend((ref, "baseline" if body["state"] == "BASELINED" else "opaque") for ref in body["refs"])
+        if body.get("binding"):
+            todo.append((body["binding"]["payload"]["body"]["artifact_hash"], "opaque"))
+        if body.get("packet"):
+            todo.append((body["packet"]["payload"]["body"]["inputs_hash"], "inputs"))
+    while todo:
+        reference, kind = todo.pop()
+        if (reference, kind) in visited:
+            continue
+        visited.add((reference, kind))
+        raw = custody.evidence_get(reference)
         if digest(raw) != reference:
             raise ClosureError("EVIDENCE_HASH_MISMATCH", reference)
         evidence[reference] = base64.b64encode(raw).decode("ascii")
         if len(evidence) > MAX_OBJECTS:
             raise ClosureError("PORTABLE_BUNDLE_TOO_LARGE")
-        try:
-            value = strict_loads(raw)
-        except ClosureError:
-            continue  # binary evidence is retained verbatim, never interpreted as protocol JSON
-        todo.extend(_hashes(value))
+        if kind == "inputs":
+            todo.extend(_input_references(strict_loads(raw)))
+        elif kind == "baseline":
+            manifest = strict_loads(raw)
+            todo.append((manifest["artifact_hash"], "opaque"))
+            todo.extend((ref, "opaque") for ref in manifest["protected"].values())
     evaluators = {}
     policies = {}
     for item in pages[0]["contracts"]:
@@ -112,6 +153,12 @@ def export_bundle(custody, transaction):
     bundle["portable"] = {
         "version": VERSION,
         "transaction_id": transaction,
+        "scope": {
+            "mode": "transaction",
+            "transactions": scope,
+            "global_chain": "SIGNATURES_HASH_LINKS_CHRONOLOGY_CHECKPOINT",
+            "foreign_transaction_semantics": "NOT_EVALUATED",
+        },
         "trust": trust.data,
         "pages": pages,
         "evaluators": evaluators,
@@ -195,6 +242,18 @@ def verify_bundle(
         canonical(page)  # same limits as every signed protocol page
         if page.get("trust") != trust.data:
             raise ClosureError("EXPORT_TRUST_MISMATCH")
+    events = [event for page in proof["pages"] for event in page["events"]]
+    scope = _required_scope(proof["pages"][0]["contracts"], events, proof["transaction_id"])
+    expected_scope = {
+        "mode": "transaction",
+        "transactions": scope,
+        "global_chain": "SIGNATURES_HASH_LINKS_CHRONOLOGY_CHECKPOINT",
+        "foreign_transaction_semantics": "NOT_EVALUATED",
+    }
+    if proof["scope"] != expected_scope or set(scope) != {
+        item["contract"]["transaction_id"] for item in proof["pages"][0]["contracts"]
+    }:
+        raise ClosureError("EXPORT_SCOPE_MISMATCH")
     raw_evidence = {}
     total = 0
     for reference, encoded in proof["evidence"].items():
@@ -244,6 +303,7 @@ def verify_bundle(
         fetch,
         prior_checkpoint=prior_checkpoint,
         transaction=proof["transaction_id"],
+        transaction_scope=scope,
     )
     closure = result["closure"]
     for field, expected in (

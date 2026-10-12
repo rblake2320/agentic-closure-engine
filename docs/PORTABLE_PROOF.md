@@ -4,12 +4,20 @@ The authenticated `GET /api/v1/transactions/{id}/bundle` download includes the f
 owner approval, run binding, observation/ingestion records and deployment receipts. Its
 `portable` member adds the public enrollment, owner-approved evaluator definitions (including
 expected and restoration values), known kernel policy version identifiers, complete signed
-global ledger history, signed custodian checkpoint and exact content-addressed evidence bytes.
+global signed event envelopes, signed custodian checkpoint and exact content-addressed evidence
+bytes for the requested transaction and its required recovery relationships. Unrelated
+transactions' artifacts, observation bytes and top-level contract/evaluator catalogs are excluded.
 The custody audit-export response also supplies the public enrollment; it contains public
 Ed25519 keys and role assignments, never private signing keys or bearer credentials.
 
-The complete global history is necessary because a transaction's events are linked through
-intervening events for other transactions. This export explicitly refuses a concurrently
+The complete global signed event chain is necessary because a transaction's events are linked
+through intervening events for other transactions. Those envelopes expose shared ledger metadata
+(including identifiers, event/packet bindings, hashes and any embedded recovery-contract fields).
+This is transaction artifact
+minimization, not tenant isolation or concealment of all foreign metadata. API viewer grants are
+global; deployments needing tenant access controls must not describe them as tenant-scoped.
+Raw artifact or probe JSON is treated as opaque bytes: a hash-looking string inside it never
+authorizes following another custody object. This export explicitly refuses a concurrently
 changing ledger snapshot (`EXPORT_SNAPSHOT_CHANGED`); retry the read. Downloads contain
 application evidence, artifacts and probe locations and should be handled as sensitive project
 data even though no signing or deployment credential is exported.
@@ -30,10 +38,19 @@ and refuses an enrollment replacement even if the attacker recomputes every loca
 
 The command needs no bearer token, runtime folder, private key, target connection or running
 ACE service. It verifies every embedded evidence digest, frozen approval, event and checkpoint
-signature; reconstructs the ledger with the existing `Ledger.import_history`; and uses the
-existing `replay_packet`/deterministic verdict evaluator. It additionally checks that the readable
+signature; applies the shared ledger chain checker to all event metadata and the existing
+`Ledger._apply` transition/evidence rules to the declared transaction scope; and uses the existing
+`replay_packet`/deterministic verdict evaluator. It additionally checks that the readable
 evaluator expectations and legacy run inputs exactly match their authenticated retained inputs.
 There is no new verdict algorithm or AI judge.
+
+The format is `ace.portable.v2`. Its signed chain authentication and semantic evaluation scope
+are distinct. Verification returns `verification_scope`, with the requested transaction and
+required recovery ancestors/children, and `foreign_transaction_semantics: NOT_EVALUATED`.
+Only scoped transaction states appear in the verified result. Prior OBSERVING packets are still
+fully replayed: a terminal packet omitting a previously ledgered qualified FAIL is rejected by
+the unchanged `LEDGERED_EVIDENCE_OMITTED` rule. The older v1 verifier refuses v2's version/fields;
+it must not silently claim full global replay. Use the updated installed verifier.
 
 For an acceptance gate, also bind the caller's independently expected subject using
 `--expected-transaction`, `--expected-contract-hash` and `--expected-artifact-hash`. These refuse
@@ -91,3 +108,12 @@ policy/approval/signature/evidence alteration, missing evidence, dropped history
 input edits, duplicate JSON keys, aggregate exports larger than one protocol item, independent
 checkpoint verification and rollback behind a real later signed checkpoint. No outcomes are
 mocked; hostile cases modify only copies of recorded public proof.
+
+`tests/test_runtime_portable_scoped.py` additionally deploys two real targets with distinct
+private artifact canaries, verifies accepted closures after stopping both targets, and checks
+that A's bundle excludes B's bytes even when A's own artifact contains B's artifact digest.
+A real failed change and successful recovery retain required parent/child evidence without
+exporting B's bytes. A separately labelled cryptographic adversarial probe constructs a genuinely
+signed false PROVEN packet that omits a previously ledgered mandatory FAIL; scoped replay refuses
+it while its truthful DISPROVEN control succeeds. Foreign event signature tampering, dropping
+an own event and changing the scope/version are refused.

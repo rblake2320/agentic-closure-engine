@@ -40,7 +40,14 @@ class FetchingStore(EvidenceStore):
 
 
 def replay_audit_export(
-    pages, trust, expected_trust_hash, fetch_evidence, *, prior_checkpoint=None, transaction=None
+    pages,
+    trust,
+    expected_trust_hash,
+    fetch_evidence,
+    *,
+    prior_checkpoint=None,
+    transaction=None,
+    transaction_scope=None,
 ):
     """Verify an audit export end to end. ``pages`` are consecutive audit-export responses.
 
@@ -69,13 +76,23 @@ def replay_audit_export(
         work = Path(work)
         store = FetchingStore(work / "evidence", fetch_evidence)
         ledger = Ledger(work / "ledger.sqlite", trust, store)
-        imported = ledger.import_history(
+        replay = ledger.import_history if transaction_scope is None else ledger.replay_transaction_history
+        kwargs = {} if transaction_scope is None else {"scope": transaction_scope}
+        imported = replay(
             [freeze(item["contract"], item["approval"], trust) for item in pages[0]["contracts"]],
             [event for page in pages for event in page["events"]],
             checkpoint,
             prior_checkpoint=prior_checkpoint,
+            **kwargs,
         )
         result = {key: imported[key] for key in ("verified_head", "sequence", "transactions")}
+        if transaction_scope is not None:
+            result["verification_scope"] = {
+                "mode": "transaction",
+                "transactions": sorted(transaction_scope),
+                "global_chain": "SIGNATURES_HASH_LINKS_CHRONOLOGY_CHECKPOINT",
+                "foreign_transaction_semantics": "NOT_EVALUATED",
+            }
         if transaction is not None:
             packet = imported["packets"].get(transaction)
             if packet is None:
