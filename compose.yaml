@@ -1,6 +1,6 @@
 name: agentic-closure-engine
 x-service: &service
-  image: agentic-closure-engine:0.3.0
+  image: agentic-closure-engine:0.3.1
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
@@ -20,7 +20,7 @@ x-service: &service
     options: {max-size: 10m, max-file: '3'}
 services:
   bootstrap:
-    image: agentic-closure-engine:0.3.0
+    image: agentic-closure-engine:0.3.1
     build: .
     user: '0:0'
     labels: {ace.product: closure-engine}

@@ -44,7 +44,7 @@ def main():
 
     def command(arguments):
         result = subprocess.run(
-            mount + ["--entrypoint", "closure-engine", "agentic-closure-engine:0.3.0"] + arguments,
+            mount + ["--entrypoint", "closure-engine", "agentic-closure-engine:0.3.1"] + arguments,
             capture_output=True,
             text=True,
             timeout=60,
@@ -87,7 +87,7 @@ def main():
             "print(digest(strict_loads(Path('/auth/credentials.json').read_bytes())))"
         )
         baseline = subprocess.check_output(
-            mount + ["--entrypoint", "python", "agentic-closure-engine:0.3.0", "-I", "-c", code], text=True
+            mount + ["--entrypoint", "python", "agentic-closure-engine:0.3.1", "-I", "-c", code], text=True
         ).strip()
         first = command(
             [
@@ -145,7 +145,7 @@ def main():
         # Existing operator credentials remain valid after the temporary enrollment.
         assert request(Path(".runtime/operator.token").read_text().strip())["state"] == "ACCEPTED"
         after = subprocess.check_output(
-            mount + ["--entrypoint", "python", "agentic-closure-engine:0.3.0", "-I", "-c", code], text=True
+            mount + ["--entrypoint", "python", "agentic-closure-engine:0.3.1", "-I", "-c", code], text=True
         ).strip()
         assert after == baseline, "Temporary enrollment changed another identity"
         result = {

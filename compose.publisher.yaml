@@ -5,7 +5,7 @@ services:
       - publisher-data:/volumes/publisher-data
       - ${ACE_RUNTIME_DIRECTORY:-./.runtime}/initial-artifact.json:/input/initial-artifact.json:ro
   publisher:
-    image: agentic-closure-engine:0.3.0
+    image: agentic-closure-engine:0.3.1
     user: '11008:11008'
     command: [publisher]
     read_only: true
