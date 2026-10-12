@@ -27,7 +27,7 @@ from .rpc import (
     validate_credentials,
 )
 
-TX = r"([A-Za-z0-9._:-]+(?:/recovery)*)"
+TX = r"([A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*)"
 ACTIONS = {
     "approve": ("owner", "approve"),
     "accept": ("owner", "accept"),
@@ -185,6 +185,19 @@ class _Handler(ServiceHandler):
             return
 
     @staticmethod
+    def _existing_legacy_subject(runtime, tx):
+        """Only already-stored legacy slash subjects may use the path routing namespace.
+
+        New proposals retain the strict external validator. Dot segments are never routed;
+        unknown suffixes are routes, not synthetic transaction IDs. Custody resolves IDs via
+        hashed storage keys, so this existence check does not interpret an ID as a file path.
+        """
+        if any(part in {".", ".."} for part in tx.split("/")):
+            raise ClosureError("ROUTE_NOT_FOUND")
+        if "/" in tx and not runtime.custody.exists(tx):
+            raise ClosureError("ROUTE_NOT_FOUND")
+
+    @staticmethod
     def _require(principal, role):
         if role not in principal["roles"]:
             raise RoleDenied(role)
@@ -219,15 +232,19 @@ class _Handler(ServiceHandler):
                 }
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/contract", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.contract(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/closure", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.closure(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/bundle", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.export_bundle(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX, path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.status(match.group(1))
             raise ClosureError("ROUTE_NOT_FOUND")
         if method != "POST":
@@ -249,6 +266,7 @@ class _Handler(ServiceHandler):
                 raise ClosureError("ROUTE_NOT_FOUND")
             role, method_name = ACTIONS[match.group(2)]
             self._require(principal, role)
+            self._existing_legacy_subject(runtime, match.group(1))
             if match.group(2) == "observe":
                 phase = body.get("phase", "all")
                 if set(body) - {"phase"} or phase not in {"all", "instant", "window"}:
