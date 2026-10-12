@@ -832,18 +832,10 @@ class Runtime:
         }
 
     def export_bundle(self, tx):
-        """Runtime bundle accepted by `closure-engine evaluate-run` for independent recomputation."""
-        meta = self._tx(tx)
-        if meta["binding"] is None:
-            raise ClosureError("RUN_BINDING_REQUIRED", tx)
-        return {
-            "mode": "runtime",
-            "contract": meta["contract"],
-            "approval": meta["approval"],
-            "binding": meta["binding"],
-            "records": self.custody.records(tx),
-            "receipts": self.custody.receipts(tx),
-        }
+        """Portable public proof with frozen expectations and independently replayable custody."""
+        from .portable import export_bundle
+
+        return export_bundle(self.custody, tx)
 
 
 def artifact_bytes(path):

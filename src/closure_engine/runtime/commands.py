@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from ..protocol import ClosureError, canonical, strict_loads
+from ..protocol import ClosureError, strict_loads
 from .api import ROLES as API_ROLES
 from .api import ApiServer, load_credentials, load_credentials_value
 from .custody import LocalCustody
@@ -354,7 +354,9 @@ def _tx(args):
         out = Path(args.output)
         if out.exists():
             raise ClosureError("STATE_ALREADY_EXISTS", str(out))
-        out.write_bytes(canonical(runtime.export_bundle(tx)) + b"\n")
+        from .portable import encode_bundle
+
+        out.write_bytes(encode_bundle(runtime.export_bundle(tx)))
         return {"transaction_id": tx, "bundle": str(out)}
     return getattr(runtime, action)(tx)
 

@@ -273,14 +273,6 @@ class DistributedRuntime:
         return operational_view(self.custody, tx, view["state"] or "PROPOSED", view["packet"])
 
     def export_bundle(self, tx):
-        meta = self.custody.tx(tx)
-        if meta["binding"] is None:
-            raise ClosureError("RUN_BINDING_REQUIRED", tx)
-        return {
-            "mode": "runtime",
-            "contract": meta["contract"],
-            "approval": meta["approval"],
-            "binding": meta["binding"],
-            "records": self.custody.records(tx),
-            "receipts": self.custody.receipts(tx),
-        }
+        from .portable import export_bundle
+
+        return export_bundle(self.custody, tx)
