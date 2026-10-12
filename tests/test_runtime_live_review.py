@@ -139,7 +139,8 @@ def test_unsupported_method_returns_json_405_allow(api):
     connection.close()
 
 
-def test_full_oversized_http_upload_returns_json_413(api):
+@pytest.mark.parametrize("repeat", range(5))
+def test_full_oversized_http_upload_returns_json_413(api, repeat):
     status, value = call(api, "POST", "/api/v1/transactions", {"padding": "x" * 2097152}, RELEASE)
     assert (status, value.get("error")) == (413, "INPUT_TOO_LARGE")
 

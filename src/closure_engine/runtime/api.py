@@ -11,9 +11,10 @@ import base64
 import json
 import mimetypes
 import re
+import time
 from pathlib import Path
 
-from ..protocol import ClosureError, strict_loads
+from ..protocol import MAX_BYTES, ClosureError, strict_loads
 from .roles import propose_args
 from .rpc import (
     READ_TIMEOUT_S,
@@ -153,9 +154,35 @@ class _Handler(ServiceHandler):
             value = {"error": exc.code}
             if detail:
                 value["detail"] = detail
-            return self.send_json(STATUS.get(exc.code, 400), value)
+            self.send_json(STATUS.get(exc.code, 400), value)
+            if exc.code == "INPUT_TOO_LARGE":
+                self._drain_rejected_upload()
+            return
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "RUNTIME_ERROR", "type": type(exc).__name__})
+
+    def _drain_rejected_upload(self):
+        """After sending 413, consume a bounded rejected upload before TCP close.
+
+        Closing with unread upload bytes can reset Windows TCP before the client reads the
+        JSON response. Send first (headers-only clients receive 413 immediately), then discard
+        at most 4 MiB for 0.5 seconds; never allocate the upload or wait for an absent body.
+        Bodies already consumed by strict JSON parsing do not need this transport cleanup.
+        """
+        value = self.headers.get("Content-Length", "")
+        if not value.isdigit() or int(value) <= 2 * MAX_BYTES:
+            return
+        remaining = min(int(value), 4 * MAX_BYTES)
+        deadline = time.monotonic() + 0.5
+        self.connection.settimeout(0.1)
+        try:
+            while remaining and time.monotonic() < deadline:
+                chunk = self.rfile.read1(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (TimeoutError, OSError):
+            return
 
     @staticmethod
     def _require(principal, role):
