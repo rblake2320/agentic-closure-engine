@@ -153,6 +153,8 @@ class Runtime:
         target serves today is read as the restoration criterion. Both are frozen into the
         evaluator bundle the owner approves; the verifier confirms the current value at baseline.
         """
+        if parent is not None and expect is not None:
+            raise ClosureError("RECOVERY_CRITERIA_ARE_INHERITED")
         if parent is None:
             if (
                 not isinstance(transaction_id, str)
@@ -187,8 +189,6 @@ class Runtime:
                 restore[check["id"]] = json_pointer(strict_loads(raw), check["probe"]["pointer"])
             bundle_hash = self.store.put(canonical(evaluator.build(profile, expect, restore)))
         else:
-            if expect is not None:
-                raise ClosureError("RECOVERY_CRITERIA_ARE_INHERITED")
             bundle_hash = parent["evaluator_hash"]
         verifier = self._issuer("verifier")
         checks = [
