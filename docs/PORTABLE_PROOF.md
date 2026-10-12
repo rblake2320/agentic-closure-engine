@@ -1,5 +1,15 @@
 # Portable closure proofs
 
+The minimum verifier for `ace.portable.v2` and the repaired runtime's extended diagnostic
+action receipts is **Agentic Closure Engine 0.3.1**. Use the release wheel and independently
+retained SHA256, not an older interpreter merely because it imports `closure_engine`.
+The released 0.3.0 verifier cannot interpret these new receipt fields and may recompute
+such a run as INDETERMINATE with SCHEMA_INVALID. That is a version incompatibility, not
+evidence that the admitted 0.3.1 result was false. Never substitute that older result for
+the authority's verdict or claim that the 0.3.0 binary supports the repaired format.
+The 0.3.1 runtime/verifier retains old signed ledger records and historical safe slash IDs
+unchanged; actual old/new installed HTTP migration is covered by the release gate.
+
 The authenticated `GET /api/v1/transactions/{id}/bundle` download includes the frozen contract,
 owner approval, run binding, observation/ingestion records and deployment receipts. Its
 `portable` member adds the public enrollment, owner-approved evaluator definitions (including
