@@ -15,8 +15,9 @@ from closure_engine.runtime import Deployment, ReferenceTargetServer, Runtime
 from closure_engine.runtime.api import ApiServer
 
 LEGACY_CREATE = r"""
-import json, sys, threading, hashlib
+import json, sys, threading, hashlib, base64, http.client, secrets
 from pathlib import Path
+from closure_engine.runtime.api import ApiServer
 from closure_engine.runtime import (
     ROLES,
     Deployment,
@@ -54,17 +55,55 @@ ReferenceTarget.initialize(root / "target", artifact(1), target["deploy_token_sh
 server = ReferenceTargetServer(("127.0.0.1", port), root / "target")
 threading.Thread(target=server.serve_forever, daemon=True).start()
 runtime = Runtime(dep, pin)
-runtime.propose(
-    "shop/api", "release/7", artifact(7), intent="Real legacy release", expect={"primary": 7}, **window
-)
-for step in ("approve", "freeze", "baseline"):
-    getattr(runtime, step)("release/7")
-assert runtime.run("release/7")["verdict"] == "PROVEN"
-runtime.accept("release/7")
-for tx in ("nested/team/run-1", "release/7/recovery"):
-    runtime.propose(
-        "shop/api", tx, artifact(8), intent="Preserved legacy proposal", expect={"primary": 8}, **window
+token = secrets.token_urlsafe(32)
+credentials = {
+    hashlib.sha256(token.encode()).hexdigest(): {
+        "principal": "legacy-operator",
+        "roles": ["actor", "owner", "authority", "verifier", "broker", "operator", "custodian"],
+    }
+}
+api = ApiServer(("127.0.0.1", 0), runtime, credentials)
+threading.Thread(target=api.serve_forever, daemon=True).start()
+
+
+def api_call(path, body):
+    conn = http.client.HTTPConnection(*api.server_address, timeout=120)
+    conn.request(
+        "POST",
+        "/api/v1" + path,
+        json.dumps(body).encode(),
+        {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
+    response = conn.getresponse()
+    value = json.loads(response.read())
+    conn.close()
+    assert response.status in {200, 201}, (response.status, value)
+    return value
+
+
+def propose(tx, value):
+    return api_call(
+        "/transactions",
+        {
+            "target_id": "shop/api",
+            "transaction_id": tx,
+            "artifact_base64": base64.b64encode(artifact(value)).decode(),
+            "intent": "Real legacy HTTP proposal",
+            "expect": {"primary": value},
+            **window,
+        },
+    )
+
+
+propose("release/7", 7)
+for step in ("approve", "freeze", "baseline"):
+    api_call("/transactions/release/7/" + step, {})
+assert api_call("/transactions/release/7/run", {})["verdict"] == "PROVEN"
+api_call("/transactions/release/7/accept", {})
+for tx in ("nested/team/run-1", "release/7/recovery"):
+    propose(tx, 8)
+api.shutdown()
+api.server_close()
 files = {
     str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
     for folder in (
