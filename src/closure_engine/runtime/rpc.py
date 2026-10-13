@@ -66,6 +66,7 @@ def validate_credentials(credentials, approval_mode="single-operator"):
         raise ClosureError("APPROVAL_MODE_INVALID", str(approval_mode))
     if not isinstance(credentials, dict) or not credentials:
         raise ClosureError("API_CREDENTIALS_INVALID")
+    union = {}
     for digest_hex, principal in credentials.items():
         if not re.fullmatch(r"[0-9a-f]{64}", digest_hex) or not isinstance(principal, dict):
             raise ClosureError("API_CREDENTIALS_INVALID")
@@ -74,11 +75,16 @@ def validate_credentials(credentials, approval_mode="single-operator"):
         roles = principal["roles"]
         if not isinstance(roles, list) or not roles or not set(roles) <= ROLES:
             raise ClosureError("API_CREDENTIALS_INVALID")
-        if approval_mode == "independent" and {AUTHOR_ROLE, APPROVER_ROLE} <= set(roles):
-            raise ClosureError(
-                "APPROVAL_SEPARATION_VIOLATED",
-                f"credential for principal {principal['principal']!r} holds both actor and owner",
-            )
+        # Separation is per principal, not per token: the union of every token enrolled for the
+        # same principal name must not span author and approver (root's alias finding).
+        union.setdefault(principal["principal"], set()).update(roles)
+    if approval_mode == "independent":
+        for name, roles in union.items():
+            if {AUTHOR_ROLE, APPROVER_ROLE} <= roles:
+                raise ClosureError(
+                    "APPROVAL_SEPARATION_VIOLATED",
+                    f"principal {name!r} holds both actor and owner across its enrolled credentials",
+                )
     return credentials
 
 

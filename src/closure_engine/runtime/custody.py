@@ -231,11 +231,18 @@ class LocalCustody:
     def _save(self, meta):
         replace_json(self._path(meta["transaction_id"]), meta)
 
-    def create_tx(self, proposal, parent_transaction=None):
-        """Actor proposal: contract draft plus staged artifact and baseline bytes in custody."""
+    def create_tx(self, proposal, parent_transaction=None, *, proposed_by=None):
+        """Actor proposal: contract draft plus staged artifact and baseline bytes in custody.
+
+        ``proposed_by`` is the authenticated principal name supplied by the receiving boundary
+        (never a client body field). It is persisted with the transaction so that independent
+        approval can refuse the same principal later, whatever tokens it holds by then.
+        """
         with self._lock:
             if not isinstance(proposal, dict) or set(proposal) != META_FIELDS:
                 raise ClosureError("INVALID_PROPOSAL")
+            if proposed_by is not None and not (isinstance(proposed_by, str) and proposed_by):
+                raise ClosureError("INVALID_PROPOSAL", "proposed_by")
             contract = proposal["contract"]
             validate("closure-contract", contract)
             tx = proposal["transaction_id"]
@@ -277,6 +284,8 @@ class LocalCustody:
                     raise ClosureError("RECOVERY_PRECONDITION_MISMATCH")
             meta = dict(
                 proposal,
+                proposed_by=proposed_by,
+                approved_by=None,
                 approval=None,
                 binding=None,
                 pending_binding=None,
@@ -292,14 +301,35 @@ class LocalCustody:
                 self._save(parent)
             return {"transaction_id": tx, "contract_hash": digest(contract), "state": "PROPOSED"}
 
-    def set_approval(self, tx, approval):
+    @staticmethod
+    def check_approver(meta, approved_by, require_independent):
+        """Independent approval: the approver must be a bound, different principal.
+
+        Legacy transactions without a bound proposer are refused rather than assumed
+        independent; normal single-operator mode records attribution and refuses nothing.
+        """
+        if approved_by is not None and not (isinstance(approved_by, str) and approved_by):
+            raise ClosureError("INVALID_REQUEST", "approved_by")
+        if not require_independent:
+            return
+        proposer = meta.get("proposed_by")
+        if not proposer:
+            raise ClosureError("AUTHOR_BINDING_MISSING", meta["transaction_id"])
+        if not approved_by or approved_by == proposer:
+            raise ClosureError(
+                "APPROVAL_SEPARATION_REQUIRED", "approval must come from a principal other than the proposer"
+            )
+
+    def set_approval(self, tx, approval, *, approved_by=None, require_independent=False):
         """Owner approval: verified, frozen and registered before any lifecycle event."""
         with self._lock:
             meta = self.tx(tx)
             if meta["approval"] is not None:
                 raise ClosureError("ALREADY_APPROVED", tx)
+            self.check_approver(meta, approved_by, require_independent)
             frozen = freeze(meta["contract"], approval, self.trust)
             meta["approval"] = approval
+            meta["approved_by"] = approved_by
             self.ledger.register(frozen)
             self._cache = None
             self._save(meta)
