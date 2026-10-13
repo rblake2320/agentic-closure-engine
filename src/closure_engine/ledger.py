@@ -71,11 +71,15 @@ ACTIVE = {"FROZEN", "BASELINED", "EXECUTING", "VERIFYING", "OBSERVING"}
 
 
 class Ledger:
-    def __init__(self, path, trust, store, checkpoint=None):
+    def __init__(self, path, trust, store, checkpoint=None, *, _require_evaluator_custody=False):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.trust = trust
         self.store = store
+        # The operating Runtime retains owner-approved evaluator bundles. Offline v1
+        # may reference an externally installed evaluator; preserve that legacy protocol.
+        # Custody enables this private policy unconditionally, never from caller input.
+        self._require_evaluator_custody = _require_evaluator_custody
         self._prefix_owner = str(uuid.uuid4())
         self.anchor = checkpoint
         if self.path.exists() and checkpoint is None:
@@ -369,6 +373,12 @@ class Ledger:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
         contracts = self._contracts(db)
+        evaluator_references = set()
+        if self._require_evaluator_custody:
+            for frozen in contracts.values():
+                reference = frozen.data["evaluator_hash"]
+                self.store.get(reference)  # fresh physical SHA validation even on cold reopen
+                evaluator_references.add(reference)
         cursor = db.execute("SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence")
         try:
             rows = cursor.fetchall()
@@ -383,7 +393,13 @@ class Ledger:
         contract_fingerprints = {
             tx: [digest(frozen.raw), digest(frozen.approval_raw)] for tx, frozen in contracts.items()
         }
-        key = (str(self.path), self._prefix_owner, self.trust.hash, _PREFIX_SOURCE_EPOCH)
+        key = (
+            str(self.path),
+            self._prefix_owner,
+            self.trust.hash,
+            _PREFIX_SOURCE_EPOCH,
+            self._require_evaluator_custody,
+        )
         cached = getattr(self.store, "_cached_prefix", None)
         tracing = getattr(self.store, "trace_reads", None)
         prefix, references = None, ()
@@ -430,7 +446,9 @@ class Ledger:
                     for tx, value in inputs.items()
                 },
             }
-            self.store._remember_prefix(key, set(references) | trace["references"], retained)
+            self.store._remember_prefix(
+                key, set(references) | trace["references"] | evaluator_references, retained
+            )
         return result
 
     def _replay_rows(

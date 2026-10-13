@@ -63,7 +63,9 @@ class LocalCustody:
                 # anchor without its ledger is verified against the recreated empty history,
                 # which fails for any anchor beyond genesis (truncation).
                 checkpoint = read_json(anchor, "CHECKPOINT_MISSING")
-                self._ledger = Ledger(path, self.trust, self.store, checkpoint=checkpoint)
+                self._ledger = Ledger(
+                    path, self.trust, self.store, checkpoint=checkpoint, _require_evaluator_custody=True
+                )
         return self._ledger
 
     def _custodian(self):

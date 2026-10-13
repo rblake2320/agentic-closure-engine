@@ -424,7 +424,8 @@ def test_real_process_kill_after_validated_prefix_before_append_cold_replays(run
 
 
 @pytest.mark.parametrize("subject", ("ledger", "evidence", "inputs", "evaluator"))
-def test_live_custody_same_metadata_mutation_refuses_status_and_packet(world, subject):  # noqa: F811
+@pytest.mark.parametrize("mutation", ("same-size-and-mtime", "delete"))
+def test_live_custody_same_metadata_mutation_refuses_status_and_packet(world, subject, mutation):  # noqa: F811
     deployment, pin, _ = world
     runtime = Runtime(deployment, pin)
     _, result = run_to_verdict(runtime, "custody-integrity", artifact(2))
@@ -437,17 +438,20 @@ def test_live_custody_same_metadata_mutation_refuses_status_and_packet(world, su
     if subject == "ledger":
         path = custody.ledger.path
         saved, stat = path.read_bytes(), path.stat()
-        with sqlite3.connect(path) as db:
-            from closure_engine.protocol import strict_loads
+        if mutation == "delete":
+            path.unlink()
+        else:
+            with sqlite3.connect(path) as db:
+                from closure_engine.protocol import strict_loads
 
-            first = strict_loads(db.execute("SELECT envelope FROM events WHERE sequence=1").fetchone()[0])
-            before = first["payload"]["created_at"]
-            # Same length and valid timestamp, but no longer the bytes the actor signed.
-            first["payload"]["created_at"] = before[:-4] + ("001Z" if before[-4:] != "001Z" else "002Z")
-            db.execute(
-                "UPDATE events SET envelope=?,event_hash=? WHERE sequence=1",
-                (canonical(first), digest(first)),
-            )
+                first = strict_loads(db.execute("SELECT envelope FROM events WHERE sequence=1").fetchone()[0])
+                before = first["payload"]["created_at"]
+                # Same length and valid timestamp, but no longer the bytes the actor signed.
+                first["payload"]["created_at"] = before[:-4] + ("001Z" if before[-4:] != "001Z" else "002Z")
+                db.execute(
+                    "UPDATE events SET envelope=?,event_hash=? WHERE sequence=1",
+                    (canonical(first), digest(first)),
+                )
     else:
         reference = (
             body[subject + "_hash"]
@@ -456,13 +460,18 @@ def test_live_custody_same_metadata_mutation_refuses_status_and_packet(world, su
         )
         path = custody.store.path_for(reference)
         saved, stat = path.read_bytes(), path.stat()
-        path.write_bytes(bytes([saved[0] ^ 1]) + saved[1:])
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    assert path.stat().st_size == stat.st_size and path.stat().st_mtime_ns == stat.st_mtime_ns
+        if mutation == "delete":
+            path.unlink()
+        else:
+            path.write_bytes(bytes([saved[0] ^ 1]) + saved[1:])
+    if mutation != "delete":
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert path.stat().st_size == stat.st_size and path.stat().st_mtime_ns == stat.st_mtime_ns
     try:
         for read in (
             lambda: runtime.status("custody-integrity"),
             lambda: custody.technical_packet("custody-integrity"),
+            lambda: Runtime(deployment, pin).status("custody-integrity"),
         ):
             with pytest.raises(ClosureError):
                 read()
@@ -483,3 +492,33 @@ def test_live_custody_returned_snapshot_mutation_never_poison_status(world):  # 
     returned["transactions"]["custody-copy"] = "DISPROVEN"
     returned["packets"]["custody-copy"]["signature"] = "00" * 64
     assert runtime.status("custody-copy") == expected
+
+
+def test_runtime_evaluator_custody_is_required_even_before_baseline(world):  # noqa: F811
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    runtime.propose(
+        "shop/api",
+        "frozen-custody",
+        artifact(2),
+        intent="Approved correction",
+        expect={"primary": 2},
+        duration_ms=3000,
+        min_samples=3,
+        max_clock_skew_ms=1000,
+        settle_ms=2500,
+    )
+    runtime.approve("frozen-custody")
+    runtime.freeze("frozen-custody")
+    assert Runtime(deployment, pin).status("frozen-custody")["state"] == "FROZEN"
+    reference = runtime.custody.tx("frozen-custody")["contract"]["evaluator_hash"]
+    path = runtime.store.path_for(reference)
+    original = path.read_bytes()
+    path.unlink()
+    try:
+        for actual in (runtime, Runtime(deployment, pin)):
+            with pytest.raises(ClosureError, match="EVIDENCE_MISSING"):
+                actual.status("frozen-custody")
+    finally:
+        path.write_bytes(original)
+    assert runtime.baseline("frozen-custody")["state"] == "BASELINED"
