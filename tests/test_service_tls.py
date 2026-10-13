@@ -3,6 +3,7 @@
 import hashlib
 import http.client
 import secrets
+import socket
 import ssl
 import subprocess
 import sys
@@ -147,3 +148,10 @@ def test_tls_origin_must_use_https(tls_api):
     port, cert, token = tls_api
     assert request(port, cert, token, origin=f"http://localhost:{port}")[0] == 403
     assert request(port, cert, token, origin=f"https://localhost:{port}")[0] == 200
+
+
+def test_stalled_tls_handshake_does_not_block_an_authenticated_client(tls_api):
+    port, cert, token = tls_api
+    # A real peer sends no ClientHello. Its handshake must not monopolize accept().
+    with socket.create_connection(("127.0.0.1", port), timeout=2):
+        assert request(port, cert, token)[0] == 200

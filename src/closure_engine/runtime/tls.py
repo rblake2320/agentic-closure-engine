@@ -27,7 +27,12 @@ def secure_server(server, cert_file=None, key_file=None):
     try:
         context = server_context(cert_file, key_file)
         if context is not None:
-            server.socket = context.wrap_socket(server.socket, server_side=True)
+            # Handshake in the request worker under ServiceHandler.setup's read timeout.
+            # Eager handshake inside SSLSocket.accept would let one silent peer stop
+            # every authenticated client before ThreadingHTTPServer dispatched a worker.
+            server.socket = context.wrap_socket(
+                server.socket, server_side=True, do_handshake_on_connect=False
+            )
             server.transport_scheme = "https"
         return server
     except BaseException:
