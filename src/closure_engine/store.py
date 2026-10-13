@@ -34,7 +34,23 @@ class EvidenceStore:
     def replay_cache_info(self):
         """Bounded process-local diagnostic counters; never an authority or persisted status."""
         with self._replay_cache_lock:
-            return {"entries": len(self._replay_cache), "bytes": self._replay_cache_size}
+            entries = [entry for key, entry in self._replay_cache.items() if key[0] == "replay"]
+            return {"entries": len(entries), "bytes": sum(entry[2] for entry in entries)}
+
+    def verification_cache_info(self):
+        """All three validation pools share one count/byte budget, never three independent caps."""
+        with self._replay_cache_lock:
+            pools = {}
+            for key in self._replay_cache:
+                pools[key[0]] = pools.get(key[0], 0) + 1
+            return {"entries": len(self._replay_cache), "bytes": self._replay_cache_size, "pools": pools}
+
+    def _memo_get(self, key):
+        with self._replay_cache_lock:
+            entry = self._replay_cache.get(key)
+            if entry is not None:
+                self._replay_cache.move_to_end(key)
+            return entry
 
     def cached_replay(self, key):
         """Reuse only a prior reconstructed result whose exact custody bytes still exist.
@@ -43,11 +59,9 @@ class EvidenceStore:
         No mtime/size shortcut. A changed/deleted object raises rather than falling back to a
         stale success. The stored entry remains a previous success, never a cached failure.
         """
-        with self._replay_cache_lock:
-            entry = self._replay_cache.get(key)
-            if entry is None:
-                return None
-            self._replay_cache.move_to_end(key)
+        entry = self._memo_get(("replay", *key))
+        if entry is None:
+            return None
         references, serialized, _ = entry
         for reference in references:
             raw = self.get(reference)
@@ -58,14 +72,33 @@ class EvidenceStore:
 
     def remember_replay(self, key, references, result):
         """Called only after full successful reconstruction; nothing is loaded from disk."""
-        serialized = canonical(result)
-        references = tuple(sorted(set(references)))
+        self._memo_remember(("replay", *key), tuple(sorted(set(references))), canonical(result))
+
+    def authentication_cached(self, namespace, key, physical_blobs):
+        """Prior authentication of exact fixed bytes, not acceptance of current state.
+
+        Ledger reads the bytes again and hashes them before this lookup. Stored SQL hash
+        columns and filesystem metadata are never used to select an authenticated body.
+        """
+        entry = self._memo_get(("auth/" + namespace, *key))
+        return entry is not None and entry[1] == tuple(physical_blobs)
+
+    def remember_authentication(self, namespace, key, fixed_blobs):
+        blobs = tuple(fixed_blobs)
+        if any(not isinstance(blob, bytes) for blob in blobs):
+            raise ClosureError("AUTHENTICATION_CACHE_BYTES_REQUIRED")
+        self._memo_remember(("auth/" + namespace, *key), (), blobs)
+
+    def _memo_remember(self, key, references, payload):
+        payload_size = sys.getsizeof(payload)
+        if isinstance(payload, tuple):
+            payload_size += sum(sys.getsizeof(item) for item in payload)
         weight = (
             sys.getsizeof(key)
             + sum(sys.getsizeof(item) for item in key)
             + sys.getsizeof(references)
             + sum(sys.getsizeof(item) for item in references)
-            + sys.getsizeof(serialized)
+            + payload_size
             + 256  # entry/LRU bookkeeping, conservatively counted
         )
         if not self._replay_cache_limit or weight > self._replay_cache_budget:
@@ -78,7 +111,7 @@ class EvidenceStore:
                 or self._replay_cache_size + weight > self._replay_cache_budget
             ):
                 self._replay_cache_size -= self._replay_cache.popitem(last=False)[1][2]
-            self._replay_cache[key] = (references, serialized, weight)
+            self._replay_cache[key] = (references, payload, weight)
             self._replay_cache_size += weight
 
     def path_for(self, evidence_hash):

@@ -2,6 +2,7 @@
 
 import sqlite3
 from contextlib import contextmanager
+from importlib.resources import files
 from pathlib import Path
 
 from .contracts import FrozenContract, freeze
@@ -9,6 +10,15 @@ from .crypto import sign, verify
 from .protocol import GENESIS, ClosureError, canonical, digest, milliseconds, strict_loads
 from .recovery import recovery_status
 from .verdicts import replay_packet
+
+_AUTH_SOURCE_EPOCH = digest(
+    canonical(
+        {
+            name: digest(files("closure_engine").joinpath(name).read_bytes())
+            for name in ("ledger.py", "contracts.py", "crypto.py", "protocol.py")
+        }
+    )
+)
 
 VERDICTS = {"PROVEN", "DISPROVEN", "PARTIALLY_PROVEN", "INDETERMINATE"}
 ROLES = {
@@ -107,14 +117,36 @@ class Ledger:
         contracts = {}
         for tx, raw, approval in db.execute("SELECT transaction_id,contract,approval FROM contracts"):
             frozen = FrozenContract(raw, approval)
-            freeze(frozen.data, frozen.approval, self.trust)
+            key = (digest(raw), digest(approval), self.trust.hash, _AUTH_SOURCE_EPOCH)
+            cached = getattr(self.store, "authentication_cached", None)
+            if cached is None or not cached("contract", key, (raw, approval)):
+                freeze(frozen.data, frozen.approval, self.trust)
+                remember = getattr(self.store, "remember_authentication", None)
+                if remember is not None:
+                    remember("contract", key, (raw, approval))
             if frozen.data["transaction_id"] != tx:
                 raise ClosureError("CONTRACT_STORAGE_MISMATCH")
             contracts[tx] = frozen
         return contracts
 
-    def _apply(self, envelope, states, packets, bindings, contracts, input_sets):
-        b = verify(envelope, "ledger-event", self.trust)
+    def _authenticated_row(self, raw):
+        """Authenticate physically read canonical bytes; never memoize states or chain position."""
+        envelope = strict_loads(raw)
+        key = (digest(raw), self.trust.hash, _AUTH_SOURCE_EPOCH)
+        cached = getattr(self.store, "authentication_cached", None)
+        if cached is None or not cached("event", key, (raw,)):
+            verify(envelope, "ledger-event", self.trust)
+            if canonical(envelope) != raw:
+                raise ClosureError("LEDGER_INTEGRITY_FAILURE")
+            remember = getattr(self.store, "remember_authentication", None)
+            if remember is not None:
+                remember("event", key, (raw,))
+        return envelope
+
+    def _apply(self, envelope, states, packets, bindings, contracts, input_sets, *, _authenticated=False):
+        # Only the private physically read/canonical/authenticated row path sets this flag;
+        # append/RPC/scoped replays cannot supply a caller-controlled preverified body.
+        b = envelope["payload"]["body"] if _authenticated else verify(envelope, "ledger-event", self.trust)
         tx = b["transaction_id"]
         if tx not in contracts or b["contract_hash"] != contracts[tx].hash:
             raise ClosureError("EVENT_CONTRACT_MISMATCH")
@@ -293,8 +325,8 @@ class Ledger:
         head, seq, last_event_time = GENESIS, 0, None
         seen_event_ids = set()
         for row_seq, event_id, raw, stored_hash in rows:
-            envelope = strict_loads(raw)
-            b = verify(envelope, "ledger-event", self.trust)
+            envelope = self._authenticated_row(raw)
+            b = envelope["payload"]["body"]
             event_time = milliseconds(envelope["payload"]["created_at"])
             if last_event_time is not None and event_time < last_event_time:
                 raise ClosureError("EVENT_TIME_REGRESSION")
@@ -303,14 +335,13 @@ class Ledger:
                 or b["sequence"] != row_seq
                 or b["previous_hash"] != head
                 or b["event_id"] != event_id
-                or digest(envelope) != stored_hash
-                or canonical(envelope) != raw
+                or digest(raw) != stored_hash
                 or event_id in seen_event_ids
             ):
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
             seen_event_ids.add(event_id)
             if scope is None or b["transaction_id"] in scope:
-                self._apply(envelope, states, packets, bindings, contracts, input_sets)
+                self._apply(envelope, states, packets, bindings, contracts, input_sets, _authenticated=True)
             elif self.trust.record(envelope["payload"]["key_id"])["role"] not in ROLES[b["state"]]:
                 raise ClosureError("STATE_AUTHORITY_DENIED")
             head, seq = stored_hash, row_seq

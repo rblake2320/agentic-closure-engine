@@ -4,11 +4,14 @@ import copy
 import cProfile
 import os
 import pstats
+import sqlite3
 
 import pytest
+from test_ledger import begin, event
+from test_ledger import packet as ledger_packet
 
 from closure_engine.crypto import TrustStore, sign
-from closure_engine.protocol import GENESIS, ClosureError, digest
+from closure_engine.protocol import GENESIS, ClosureError, canonical, digest, timestamp
 from closure_engine.store import EvidenceStore
 from closure_engine.verdicts import close_run, replay_packet
 
@@ -181,3 +184,93 @@ def test_reopen_has_no_memoized_success_and_missing_raw_inputs_still_refuse(run)
     assert reopened.replay_cache_info()["entries"] == 0
     with pytest.raises(ClosureError, match="EVIDENCE_MISSING"):
         replay_packet(packet, reopened, run["trust"])
+
+
+def accepted_ledger(run, tmp_path):
+    evaluator_in_custody(run)
+    ledger = begin(run, tmp_path)
+    ledger.append(event(run, ledger, "VERIFYING", receipt=run["receipts"][0]), ledger.head)
+    initial = ledger_packet(run, ledger, now=run["start"])
+    ledger.append(event(run, ledger, "OBSERVING", packet=initial), ledger.head)
+    closed = ledger_packet(run, ledger)
+    ledger.append(event(run, ledger, "PROVEN", packet=closed), ledger.head)
+    ledger.append(event(run, ledger, "ACCEPTED"), ledger.head)
+    ledger.snapshot()  # prime all three successful validation pools
+    return ledger
+
+
+@pytest.mark.parametrize("mutation", ("delete", "timestamp-with-recomputed-hash", "duplicate-id", "order"))
+def test_authenticated_old_bytes_do_not_authorize_changed_physical_history(run, tmp_path, mutation):
+    ledger = accepted_ledger(run, tmp_path)
+    checkpoint = ledger.checkpoint(run["keys"]["custodian"], timestamp(run["start"] + 60000))
+    before = ledger.path.stat()
+    with sqlite3.connect(ledger.path) as db:
+        if mutation == "delete":
+            db.execute("DELETE FROM events WHERE sequence=(SELECT MAX(sequence) FROM events)")
+        elif mutation == "timestamp-with-recomputed-hash":
+            row = db.execute("SELECT envelope FROM events WHERE sequence=1").fetchone()
+            from closure_engine.protocol import strict_loads
+
+            altered = strict_loads(row[0])
+            altered["payload"]["created_at"] = timestamp(run["start"] + 123)
+            db.execute(
+                "UPDATE events SET envelope=?,event_hash=? WHERE sequence=1",
+                (canonical(altered), digest(altered)),
+            )
+        elif mutation == "duplicate-id":
+            db.execute("UPDATE events SET event_id='fake-literal-id' WHERE sequence=1")
+        else:
+            db.execute("UPDATE events SET sequence=900 WHERE sequence=1")
+    os.utime(ledger.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ClosureError):
+        ledger.verify(checkpoint)
+    from closure_engine.ledger import Ledger
+
+    with pytest.raises(ClosureError):
+        Ledger(
+            ledger.path, run["trust"], EvidenceStore(run["store"].root, create=False), checkpoint=checkpoint
+        )
+
+
+@pytest.mark.parametrize("column", ("contract", "approval"))
+def test_contract_authentication_is_bound_to_actual_reloaded_bytes(run, tmp_path, column):
+    ledger = accepted_ledger(run, tmp_path)
+    with sqlite3.connect(ledger.path) as db:
+        row = db.execute(f"SELECT {column} FROM contracts LIMIT 1").fetchone()
+        from closure_engine.protocol import strict_loads
+
+        altered = strict_loads(row[0])
+        if column == "contract":
+            altered["intent"] = "Unauthorized changed intent"
+        else:
+            altered["signature"] = "00" * 64
+        db.execute(f"UPDATE contracts SET {column}=?", (canonical(altered),))
+    with pytest.raises(ClosureError):
+        ledger.snapshot()
+
+
+def test_authenticated_repeated_history_still_runs_every_transition_and_input_obligation(run, tmp_path):
+    ledger = accepted_ledger(run, tmp_path)
+    profile = cProfile.Profile()
+    profile.enable()
+    first, second = ledger.snapshot(), ledger.snapshot()
+    profile.disable()
+    assert first == second
+    stats = pstats.Stats(profile).stats
+    applied = sum(data[0] for key, data in stats.items() if key[2] == "_apply")
+    assert applied == 2 * first["sequence"]
+    info = run["store"].verification_cache_info()
+    assert info["pools"]["auth/event"] and info["pools"]["auth/contract"] and info["pools"]["replay"]
+    assert info["entries"] <= 8192 and info["bytes"] <= 64 * 1024 * 1024
+
+
+def test_all_authentication_and_replay_pools_share_one_budget(tmp_path):
+    store = EvidenceStore(tmp_path / "one-budget", replay_cache_entries=3, replay_cache_bytes=4096)
+    for index in range(20):
+        store.remember_authentication("event", (str(index),), (b"event" + bytes([index]),))
+        store.remember_authentication("contract", (str(index),), (b"contract", b"approval"))
+        store.remember_replay((str(index),), [], {"verdict": "PROVEN", "index": index})
+        info = store.verification_cache_info()
+        assert info["entries"] <= 3 and info["bytes"] <= 4096
+    assert store.authentication_cached("event", ("19",), (b"event" + bytes([19]),))
+    assert not store.authentication_cached("event", ("19",), (b"eventCHANGED",))
