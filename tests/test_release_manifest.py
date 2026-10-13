@@ -116,6 +116,7 @@ def release(tmp_path):
         {
             "schema": "ace.release-consumer.v1",
             "publisher": "test-publisher",
+            "product": "example",
             "last_version": None,
             "last_manifest_sha256": None,
         },
@@ -150,7 +151,16 @@ def release(tmp_path):
         "--verifier",
         "release_manifest.py",
     ]
-    verify = base + ["verify", *common, "--expected-version", "1.0.0", "--state", str(state)]
+    verify = base + [
+        "verify",
+        *common,
+        "--expected-product",
+        "example",
+        "--expected-version",
+        "1.0.0",
+        "--state",
+        str(state),
+    ]
     return {
         "bundle": bundle,
         "key": key,
@@ -378,4 +388,93 @@ def test_release_version_must_match_wheel_metadata_at_verify(release):
     resign(release, lambda p: p.update(version="2.0.0"))
     verify = changed_arg(release["verify"], "--expected-version", "2.0.0")
     assert command(verify, 3)["code"] == "RELEASE_VERSION_MISMATCH"
+    assert json.loads(release["state"].read_text())["last_version"] is None
+
+
+def replace_product(release, name):
+    old = release["artifact"]
+    with zipfile.ZipFile(old) as wheel:
+        members = {n: wheel.read(n) for n in wheel.namelist()}
+    new = old.with_name(name.replace("-", "_") + "-1.0.0-py3-none-any.whl")
+    with zipfile.ZipFile(new, "w") as wheel:
+        for n, data in members.items():
+            if n.endswith(".dist-info/METADATA"):
+                data = data.replace(b"Name: example\n", ("Name: " + name + "\n").encode())
+                n = name.replace("-", "_") + "-1.0.0.dist-info/METADATA"
+            wheel.writestr(n, data)
+    old.unlink()
+    release["artifact"] = new
+    release["issue"] = changed_arg(release["issue"], "--artifact", new.name)
+    sbom_path = release["bundle"] / "sbom.json"
+    sbom = json.loads(sbom_path.read_text())
+    sbom["metadata"]["component"]["name"] = name
+    sbom["metadata"]["component"]["hashes"][0]["content"] = hashlib.sha256(new.read_bytes()).hexdigest()
+    save(sbom_path, sbom)
+
+
+def test_wrong_product_same_publisher_version_is_refused(release):
+    # Registered independent intent remains original 'example', not substituted AWL.
+    replace_product(release, "agent-work-ledger")
+    assert command(release["issue"])["status"] == "ISSUED"
+    assert command(release["verify"], 3)["code"] == "EXPECTED_PRODUCT_MISMATCH"
+
+
+def test_same_publisher_same_version_two_products_have_independent_counters(release):
+    command(release["issue"])
+    assert command(release["verify"])["product"] == "example"
+    # A separate product has a separate explicitly initialized state file.
+    (release["bundle"] / "release-manifest.json").unlink()
+    replace_product(release, "agent-work-ledger")
+    command(release["issue"])
+    state = release["state"].with_name("awl-consumer.json")
+    save(
+        state,
+        {
+            "schema": "ace.release-consumer.v1",
+            "publisher": "test-publisher",
+            "product": "agent-work-ledger",
+            "last_version": None,
+            "last_manifest_sha256": None,
+        },
+    )
+    verify = changed_arg(release["verify"], "--expected-product", "Agent_Work.Ledger")
+    verify = changed_arg(verify, "--state", str(state))
+    assert command(verify)["product"] == "agent-work-ledger"
+    assert command(verify, 3)["code"] == "VERSION_REPLAY"
+    assert json.loads(release["state"].read_text())["product"] == "example"
+    assert json.loads(release["state"].read_text())["last_version"] == "1.0.0"
+
+
+def test_other_product_state_is_refused_without_advancing(release):
+    command(release["issue"])
+    state = json.loads(release["state"].read_text())
+    state.update(product="agent-work-ledger", last_version="0.1.0")
+    save(release["state"], state)
+    assert command(release["verify"], 3)["code"] == "CONSUMER_PRODUCT_MISMATCH"
+    assert json.loads(release["state"].read_text()) == state
+
+
+def test_legacy_unbound_product_state_is_refused(release):
+    command(release["issue"])
+    state = json.loads(release["state"].read_text())
+    state.pop("product")
+    save(release["state"], state)
+    assert command(release["verify"], 3)["code"] == "CONSUMER_STATE_INVALID"
+
+
+def test_signed_product_label_must_match_actual_wheel(release):
+    command(release["issue"])
+    resign(release, lambda p: p.update(product="agent-work-ledger"))
+    verify = changed_arg(release["verify"], "--expected-product", "agent-work-ledger")
+    assert command(verify, 3)["code"] == "PRODUCT_WHEEL_MISMATCH"
+
+
+def test_consumer_requires_independent_product_argument(release):
+    command(release["issue"])
+    args = list(release["verify"])
+    index = args.index("--expected-product")
+    del args[index : index + 2]
+    result = subprocess.run(args, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 2
+    assert "--expected-product" in result.stderr
     assert json.loads(release["state"].read_text())["last_version"] is None

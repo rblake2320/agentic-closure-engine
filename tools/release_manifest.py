@@ -186,6 +186,32 @@ def version(value):
     )
 
 
+def normalize(name):
+    require(
+        isinstance(name, str) and bool(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?", name)),
+        "PRODUCT_NAME_INVALID",
+    )
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def wheel_metadata(root, artifact):
+    require(artifact.endswith(".whl"), "PRODUCT_WHEEL_REQUIRED")
+    with zipfile.ZipFile(member(root, artifact)) as wheel:
+        metadata_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        require(len(metadata_paths) == 1, "WHEEL_METADATA_INVALID")
+        info = wheel.getinfo(metadata_paths[0])
+        require(info.file_size <= 1024 * 1024, "WHEEL_METADATA_INVALID")
+        metadata = email.parser.BytesParser().parsebytes(wheel.read(metadata_paths[0]))
+
+    require(
+        len(metadata.get_all("Name", [])) == 1 and len(metadata.get_all("Version", [])) == 1,
+        "WHEEL_METADATA_INVALID",
+    )
+    normalize(metadata["Name"])
+    version(metadata["Version"])
+    return metadata
+
+
 def sbom_check(root, payload):
     bom = load(member(root, payload["sbom"]), 16 * 1024 * 1024)
     require(
@@ -210,18 +236,10 @@ def sbom_check(root, payload):
         "SBOM_ARTIFACT_MISMATCH",
     )
     require(isinstance(bom.get("components"), list), "SBOM_COMPONENTS_MISSING")
-    require(payload["artifact"].endswith(".whl"), "PRODUCT_WHEEL_REQUIRED")
-    with zipfile.ZipFile(member(root, payload["artifact"])) as wheel:
-        metadata_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
-        require(len(metadata_paths) == 1, "WHEEL_METADATA_INVALID")
-        info = wheel.getinfo(metadata_paths[0])
-        require(info.file_size <= 1024 * 1024, "WHEEL_METADATA_INVALID")
-        metadata = email.parser.BytesParser().parsebytes(wheel.read(metadata_paths[0]))
-
+    metadata = wheel_metadata(root, payload["artifact"])
     require(payload["version"] == metadata["Version"], "RELEASE_VERSION_MISMATCH")
 
-    def normalize(name):
-        return re.sub(r"[-_.]+", "-", name).lower()
+    require(payload["product"] == normalize(metadata["Name"]), "PRODUCT_WHEEL_MISMATCH")
 
     require(
         normalize(component["name"]) == normalize(metadata["Name"])
@@ -260,6 +278,7 @@ def payload_check(root, payload):
             "purpose",
             "publisher",
             "publisher_pin",
+            "product",
             "version",
             "source",
             "artifact",
@@ -342,6 +361,7 @@ def issue(args):
         "purpose": PURPOSE,
         "publisher": p["publisher"],
         "publisher_pin": args.publisher_pin,
+        "product": normalize(wheel_metadata(root, args.artifact)["Name"]),
         "version": args.version,
         "source": {
             "commit": args.source_commit,
@@ -430,10 +450,16 @@ def verify(args):
     )
     require(payload.get("version") == args.expected_version, "EXPECTED_VERSION_MISMATCH")
     payload_check(root, payload)
+    require(payload["product"] == normalize(args.expected_product), "EXPECTED_PRODUCT_MISMATCH")
     state_path = outside(args.state, root)
     with consumer_lock(state_path):
         state = load(state_path)
-        exact(state, ("schema", "publisher", "last_version", "last_manifest_sha256"))
+        exact(
+            state,
+            ("schema", "publisher", "product", "last_version", "last_manifest_sha256"),
+            "CONSUMER_STATE_INVALID",
+        )
+        require(state["product"] == payload["product"], "CONSUMER_PRODUCT_MISMATCH")
         require(
             state["schema"] == "ace.release-consumer.v1" and state["publisher"] == p["publisher"],
             "CONSUMER_STATE_INVALID",
@@ -450,6 +476,7 @@ def verify(args):
         "version": payload["version"],
         "manifest_sha256": digest,
         "publisher": p["publisher"],
+        "product": payload["product"],
         "scope": "publisher-attestation-not-reproducible-build-proof",
     }
 
@@ -478,6 +505,7 @@ def main():
             ):
                 child.add_argument("--" + flag, required=True)
         else:
+            child.add_argument("--expected-product", required=True)
             child.add_argument("--expected-version", required=True)
             child.add_argument("--state", required=True)
     args = parser.parse_args()

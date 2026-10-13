@@ -66,7 +66,12 @@ against an administrator racing filesystem replacement. Keep downloaded assets i
 restricted custody until verification and prevent mutation before use.
 
 SBOM `metadata.component` must identify the wheel Name/Version and contain its
-exact SHA-256. The signed release version must equal the wheel METADATA Version
+exact SHA-256. The issuer derives a signed canonical product from wheel METADATA Name (lowercase,
+with runs of hyphen/underscore/dot normalized to hyphen). It accepts no arbitrary
+product-label argument. Consumer selection requires an independently supplied
+`--expected-product`, and the signed product must also match the actual wheel.
+A publisher can sign multiple products without letting one substitute for another.
+The signed release version must equal the wheel METADATA Version
 at both issuance and consumption; contradictory correctly signed publisher claims
 are refused as `RELEASE_VERSION_MISMATCH`. Its `components` names must equal all direct `Requires-Dist` names
 from the wheel's METADATA, including optional/marker declarations. The tool checks
@@ -106,17 +111,22 @@ the bundle, with a trusted initial floor (use the already accepted version when
 migrating, rather than resetting history):
 
 ```json
-{"schema":"ace.release-consumer.v1","publisher":"example-publisher","last_version":null,"last_manifest_sha256":null}
+{"schema":"ace.release-consumer.v1","publisher":"example-publisher","product":"agentic-closure-engine","last_version":null,"last_manifest_sha256":null}
 ```
 
 ```powershell
 python -I C:/trusted-tools/release_manifest.py verify --bundle C:/release-assets `
   --publisher-profile C:/operator/publisher-profile.json --publisher-pin sha256:PROFILE_DIGEST `
-  --expected-version 0.4.0.dev1 --state C:/operator/consumer-state.json
+  --expected-product agentic-closure-engine --expected-version 0.4.0.dev1 --state C:/operator/ace-consumer-state.json
 ```
 
 Successful verification consumes the version and atomically advances the state.
-An exclusive OS lock serializes concurrent consumers. A repeated or lower version
+An exclusive OS lock serializes concurrent consumers. Use a separate state file
+for each publisher/product pair; the state explicitly binds both. AWL and ACE at
+the same version therefore advance independent counters. Wrong-product state and
+old state with no product are refused, never guessed or automatically upgraded.
+Migrate a legacy floor only after independently identifying its actual product;
+do not reset previously consumed version history. A repeated or lower version
 is refused; a missing state file is not silently initialized. The exact expected
 version must also be supplied independently. Supported ordered versions are
 `X.Y.Z`, `X.Y.Z.devN`, `X.Y.ZaN`, `X.Y.ZbN`, and `X.Y.ZrcN`, with canonical numbers.
@@ -127,10 +137,11 @@ Protect the consumer state and `.lock` sidecar. This local high-water file is no
 an externally anchored anti-rollback service: an administrator who restores old
 state can remove that local history. Preserve it with operator backups or an
 independent monotonic store when privileged rollback is in the threat model.
-The pin, expected version, and independently protected state are consumer inputs,
+The pin, expected product, expected version, and independently protected state are consumer inputs,
 not untrusted bundle contents. Verification does not install or run the wheel.
 
-Commands return JSON status on success; typed refusal JSON on stderr and exit3 on
+Missing required CLI arguments are refused by argparse with exit2. Valid commands
+return JSON status on success; typed refusal JSON on stderr and exit3 on
 failure. No private key or arbitrary input text is printed. The test gate executes
 copies of the distributed script from outside the checkout in isolated Python
 subprocesses, with real keys/files/git, actual Windows junctions, and concurrent
