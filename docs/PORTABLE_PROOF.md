@@ -96,6 +96,24 @@ instead of returning a truncated proof. The legacy `evaluate-run` command also a
 expanded bundle, verifies its portable proof first and retains its existing external store/trust
 arguments; old six-field run inputs remain supported.
 
+## Compatibility promise
+
+`ace.portable.v2` is a committed format. Every ACE verifier from 0.3.1 onward keeps a v2
+reader, and a v2 proof that verifies today keeps verifying on every later release with the same
+independently supplied pin. Any change to the proof's members, scope fields, evidence encoding or
+chain rules ships as a new version string (`ace.portable.v3`, ...) with its own minimum verifier,
+never as a silent change to v2. The v1 to v2 break between 0.3.0 and 0.3.1 is the last unversioned
+incompatibility; it is documented above and carried as a notice inside every v2 proof.
+
+The promise is executed, not asserted: `tests/fixtures/portable_v2_golden/` holds a real v2 proof
+produced by the 0.3.1 release wheel from a real loopback run (`tools/make_golden_portable_proof.py`),
+with its operator pin in a separate file and a manifest recording the proof digest and expected
+verdict. `tests/test_portable_format_commitment.py` verifies that exact proof offline through the
+library and through the shipped command on every run, pins the committed member and scope names,
+and confirms altered version, scope, evidence bytes, dropped events and a foreign pin are still
+refused. Regenerate the fixture only when introducing a new format version, and keep the old
+version's fixture so the old reader stays covered.
+
 ## What the proof authenticates
 
 The proof authenticates approved acceptance criteria, signed observations and receipts, retained

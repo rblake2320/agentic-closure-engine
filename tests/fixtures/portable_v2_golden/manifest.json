@@ -1,0 +1,10 @@
+{
+  "expected_artifact_hash": "sha256:92c6d178490328412109c8eb077284751684d1ebf076b36820986043c86b301d",
+  "expected_verdict": "PROVEN",
+  "format": "ace.portable.v2",
+  "note": "Real proof from a real loopback run; regenerate only for a new format version.",
+  "produced_by": "agentic-closure-engine 0.3.1",
+  "proof_bytes": 88315,
+  "proof_sha256": "2d1d048eaa74848106c43abb010abed56848fe693078b0064026fd801c936037",
+  "transaction_id": "golden-portable-v2"
+}
