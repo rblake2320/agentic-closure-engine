@@ -522,3 +522,122 @@ def test_runtime_evaluator_custody_is_required_even_before_baseline(world):  # n
     finally:
         path.write_bytes(original)
     assert runtime.baseline("frozen-custody")["state"] == "BASELINED"
+
+
+@pytest.mark.parametrize("mutation", ("delete", "older", "corrupt"))
+def test_custody_latest_checkpoint_file_must_match_retained_commitment(world, mutation):  # noqa: F811
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    runtime.status()  # creates the genuinely signed genesis anchor
+    path = runtime.custody.root / "checkpoint.json"
+    old = path.read_bytes()
+    _, result = run_to_verdict(runtime, "anchor-integrity", artifact(2))
+    assert result["verdict"] == "PROVEN"
+    runtime.accept("anchor-integrity")
+    original = path.read_bytes()
+    before = runtime.status("anchor-integrity")
+    first_event = runtime.custody.audit_export()["events"][0]
+    if mutation == "delete":
+        path.unlink()
+    elif mutation == "older":
+        path.write_bytes(old)  # authentic older checkpoint, not an invalid signature
+    else:
+        checkpoint = json.loads(original)
+        checkpoint["signature"] = "00" * 64
+        path.write_bytes(canonical(checkpoint))
+    try:
+        for read in (
+            lambda: runtime.status("anchor-integrity"),
+            runtime.custody.checkpoint,
+            lambda: runtime.custody.append(first_event, first_event["payload"]["body"]["previous_hash"]),
+        ):
+            with pytest.raises(ClosureError):
+                read()
+    finally:
+        path.write_bytes(original)
+    assert runtime.status("anchor-integrity") == before
+    receipt = runtime.custody.append(first_event, first_event["payload"]["body"]["previous_hash"])
+    assert receipt["event_hash"] == digest(first_event)
+    assert receipt["head"] == before["ledger_head"]
+    assert receipt["sequence"] == before["ledger_sequence"]
+    assert runtime.status("anchor-integrity") == before
+    assert json.loads(path.read_bytes())["payload"]["body"]["sequence"] == before["ledger_sequence"]
+
+
+def test_real_process_kill_after_append_before_checkpoint_reconciles_signed_suffix(world):  # noqa: F811
+    deployment, pin, root = world
+    runtime = Runtime(deployment, pin)
+    runtime.propose(
+        "shop/api",
+        "committed-crash",
+        artifact(2),
+        intent="Approved correction",
+        expect={"primary": 2},
+        duration_ms=3000,
+        min_samples=3,
+        max_clock_skew_ms=1000,
+        settle_ms=2500,
+    )
+    runtime.approve("committed-crash")
+    custody = runtime.custody
+    meta = custody.tx("committed-crash")
+    head, sequence = custody.position()
+    pending = sign(
+        deployment.identity("authority", runtime.trust),
+        "ledger-event",
+        {
+            "event_id": "crash-after-commit",
+            "transaction_id": "committed-crash",
+            "contract_hash": digest(meta["contract"]),
+            "sequence": sequence + 1,
+            "previous_hash": head,
+            "state": "FROZEN",
+            "refs": [],
+            "packet": None,
+            "binding": None,
+            "receipt": None,
+            "recovery_contract": None,
+            "recovery_approval": None,
+            "risk": None,
+        },
+        runtime.clock.now(),
+    )
+    (root / "event.json").write_bytes(canonical(pending))
+    script = root / "append-before-anchor.py"
+    script.write_text(
+        "import sys,time,json\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+        "from closure_engine.runtime import Runtime,Deployment\n"
+        "from closure_engine.protocol import strict_loads\n"
+        "root=Path(sys.argv[2]);r=Runtime(Deployment(root/'ace'),sys.argv[3])\n"
+        "e=strict_loads((root/'event.json').read_bytes())\n"
+        "r.custody.ledger.append(e,e['payload']['body']['previous_hash'])\n"
+        "(root/'append-ready').write_text(json.dumps(r.custody.ledger.snapshot()))\n"
+        "while not (root/'checkpoint-release').exists():time.sleep(.05)\n"
+        "r.custody.checkpoint()\n",
+        encoding="utf-8",
+    )
+    import closure_engine
+
+    child = subprocess.Popen(
+        [sys.executable, "-I", str(script), str(Path(closure_engine.__file__).parent.parent), str(root), pin],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not (root / "append-ready").exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.025)
+        assert (root / "append-ready").exists(), child.communicate(timeout=1)
+        child.kill()
+        child.communicate(timeout=5)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+    checkpoint_path = custody.root / "checkpoint.json"
+    assert json.loads(checkpoint_path.read_bytes())["payload"]["body"]["sequence"] == sequence
+    cold = Runtime(deployment, pin)
+    assert cold.status("committed-crash")["state"] == "FROZEN"
+    refreshed = cold.custody.checkpoint()
+    assert refreshed["payload"]["body"]["sequence"] == sequence + 1
+    assert cold.status("committed-crash")["state"] == "FROZEN"

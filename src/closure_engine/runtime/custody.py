@@ -15,7 +15,7 @@ import threading
 from ..contracts import freeze
 from ..crypto import sign, verify
 from ..ledger import Ledger
-from ..protocol import GENESIS, POLICY_HASH, ClosureError, digest, strict_loads, validate
+from ..protocol import GENESIS, POLICY_HASH, ClosureError, canonical, digest, strict_loads, validate
 from ..store import EvidenceStore
 from . import evaluator
 from .clock import SystemClock
@@ -44,6 +44,7 @@ class LocalCustody:
         self._ledger = None
         self._lock = threading.RLock()
         self._cache = None  # (file identity, verified snapshot)
+        self._checkpoint_high_water = None  # immutable authenticated bytes, never caller-owned dict
         from .witness_gate import check_witness_configuration
 
         check_witness_configuration(self)
@@ -87,7 +88,33 @@ class LocalCustody:
         Each returned snapshot is independent of prior callers' mutable dictionaries.
         """
         with self._lock:
+            self._refresh_anchor()
             return self.ledger.snapshot()
+
+    def _refresh_anchor(self):
+        """Authenticate the configured file and never lower an observed commitment.
+
+        The native Ledger still reconstructs the referenced history. A signed checkpoint
+        is an integrity anchor, never permission to import its claimed semantic state.
+        """
+        ledger = self.ledger
+        checkpoint = read_json(self.root / "checkpoint.json", "CHECKPOINT_MISSING")
+        body = verify(checkpoint, "checkpoint", self.trust)
+        retained = (
+            ledger.anchor
+            if self._checkpoint_high_water is None
+            else strict_loads(self._checkpoint_high_water)
+        )
+        prior = verify(retained, "checkpoint", self.trust)
+        if (
+            body["trust_hash"] != self.trust.hash
+            or body["sequence"] < prior["sequence"]
+            or (body["sequence"] == prior["sequence"] and body["head_hash"] != prior["head_hash"])
+        ):
+            raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
+        raw = canonical(checkpoint)
+        self._checkpoint_high_water = raw
+        ledger.anchor = strict_loads(raw)
 
     def position(self):
         snapshot = self.snapshot()
@@ -106,19 +133,34 @@ class LocalCustody:
 
     def checkpoint(self):
         with self._lock:
+            self._refresh_anchor()
             checkpoint = self.ledger.checkpoint(self._custodian(), self.clock.now())
             replace_json(self.root / "checkpoint.json", checkpoint)
+            self._checkpoint_high_water = canonical(checkpoint)
+            self.ledger.anchor = strict_loads(self._checkpoint_high_water)
             return checkpoint
 
     def _sign_checkpoint(self, sequence, head):
+        if self._ledger is not None:
+            self._refresh_anchor()
+            actual_head, actual_sequence = self._ledger.position
+            if sequence > actual_sequence or (sequence == actual_sequence and head != actual_head):
+                raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
+            # An exact old-event retry must not sign an older head. Anchor the freshly
+            # validated current position, including a committed suffix from a crash.
+            sequence, head = actual_sequence, actual_head
         body = {"sequence": sequence, "head_hash": head, "trust_hash": self.trust.hash}
         checkpoint = sign(self._custodian(), "checkpoint", body, self.clock.now())
         replace_json(self.root / "checkpoint.json", checkpoint)
+        self._checkpoint_high_water = canonical(checkpoint)
+        if self._ledger is not None:
+            self._ledger.anchor = strict_loads(self._checkpoint_high_water)
         return checkpoint
 
     def append(self, event, expected_head):
         """Admit one signed ledger event, then derive records from what the ledger accepted."""
         with self._lock:
+            self._refresh_anchor()
             body = verify(event, "ledger-event", self.trust)
             meta = self.tx(body["transaction_id"])
             if body["state"] == "EXECUTING" and (
@@ -141,9 +183,15 @@ class LocalCustody:
                     if body["state"] in VERDICT_STATES:
                         meta["verdict_packet"] = body["packet"]
                 self._save(meta)
-                # Ledger admission verified this exact event under our lock.
-                self._sign_checkpoint(body["sequence"], event_hash)
-                return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
+                # Exact old-event retries retain their receipt subject without lowering
+                # the authenticated current checkpoint or advertised global position.
+                checkpoint = self._sign_checkpoint(body["sequence"], event_hash)
+                current = checkpoint["payload"]["body"]
+                return {
+                    "event_hash": event_hash,
+                    "head": current["head_hash"],
+                    "sequence": current["sequence"],
+                }
 
     def view(self, tx):
         """One verified ledger snapshot projected for one transaction (state + technical packet)."""
