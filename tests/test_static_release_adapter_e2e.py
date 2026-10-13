@@ -364,7 +364,7 @@ def test_actual_header_trickle_reaches_whole_connection_deadline(world):
                     break
             except socket.timeout:
                 continue
-            except (ConnectionResetError, BrokenPipeError):
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                 closed = True
                 break
     elapsed = time.monotonic() - started
