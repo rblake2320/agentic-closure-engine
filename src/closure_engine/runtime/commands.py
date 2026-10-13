@@ -133,6 +133,8 @@ def _service_args(parser, default_port=None):
     parser.add_argument(
         "--credentials", required=True, help="Credentials directory (live reload, mount read-only) or file"
     )
+    parser.add_argument("--tls-cert-file", help="Operator-enrolled PEM certificate/chain for HTTPS")
+    parser.add_argument("--tls-key-file", help="Private PEM certificate key; required with --tls-cert-file")
 
 
 def register_api(sub):
@@ -212,9 +214,19 @@ def _read_token(path):
     return token
 
 
-def _serve(server, name):
+def _serve(server, name, *, cert_file=None, key_file=None):
+    from .tls import secure_server
+
+    secure_server(server, cert_file, key_file)
     print(
-        json.dumps({"service": name, "bind": server.server_address[0], "port": server.server_address[1]}),
+        json.dumps(
+            {
+                "service": name,
+                "bind": server.server_address[0],
+                "port": server.server_address[1],
+                "transport": getattr(server, "transport_scheme", "http"),
+            }
+        ),
         flush=True,
     )
     try:
@@ -244,7 +256,7 @@ def _serve_api(args):
     server = ApiServer(
         (args.bind, args.port), runtime, load_credentials(args.credentials), static, hosts=args.allowed_host
     )
-    _serve(server, "ace-runtime-api")
+    _serve(server, "ace-runtime-api", cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def _serve_custody(args):
@@ -257,7 +269,7 @@ def _serve_custody(args):
         hosts=args.allowed_host,
         credentials=load_credentials(args.credentials),
     )
-    _serve(server, "ace-custody")
+    _serve(server, "ace-custody", cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def _serve_role(args):
@@ -271,7 +283,7 @@ def _serve_role(args):
         hosts=args.allowed_host,
         credentials=load_credentials(args.credentials),
     )
-    _serve(server, "ace-role-" + args.role)
+    _serve(server, "ace-role-" + args.role, cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def packaged_ui():

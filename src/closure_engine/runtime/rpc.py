@@ -156,8 +156,11 @@ class ServiceHandler(BaseHTTPRequestHandler):
         origins = self.headers.get_all("Origin") or []
         if len(origins) > 1:
             return False
-        return not origins or origins[0] in {"http://" + h for h in self.server.allowed} | {
-            "https://" + h for h in self.server.allowed
+        schemes = (
+            {"https"} if getattr(self.server, "transport_scheme", None) == "https" else {"http", "https"}
+        )
+        return not origins or origins[0] in {
+            scheme + "://" + host for scheme in schemes for host in self.server.allowed
         }
 
     def principal(self):
