@@ -1,10 +1,40 @@
 """Deterministic admission and aggregation; no model, network, or side effects."""
 
 from dataclasses import asdict, dataclass
+from importlib.resources import files
 
 from .contracts import freeze
 from .crypto import sign, verify
 from .protocol import POLICY_V3, ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
+
+# Protected implementation identity. Memoization is process-local and cannot survive an
+# engine upgrade; exact source epoch also separates reloads in a long-lived caller.
+_REPLAY_SOURCE_EPOCH = digest(
+    canonical(
+        {
+            name: digest(files("closure_engine").joinpath(name).read_bytes())
+            for name in ("verdicts.py", "contracts.py", "crypto.py", "protocol.py")
+        }
+    )
+)
+
+
+class _ReplayReads:
+    """Record actual semantic reads, never arbitrary digest strings inside opaque evidence."""
+
+    def __init__(self, store):
+        self.store, self.references, self.failed = store, set(), False
+
+    def get(self, reference):
+        try:
+            raw = self.store.get(reference)
+            if digest(raw) != reference:
+                raise ClosureError("EVIDENCE_HASH_MISMATCH")
+        except BaseException:
+            self.failed = True
+            raise
+        self.references.add(reference)
+        return raw
 
 
 @dataclass(frozen=True)
@@ -307,7 +337,14 @@ def close_run(*, authority, ledger_head, **args):
 def replay_packet(packet, store, trust):
     """Reconstruct every signed claim without access to the authority private key."""
     p = verify(packet, "closure-packet", trust)
-    manifest = strict_loads(store.get(p["inputs_hash"]))
+    key = (digest(packet), trust.hash, p["policy_hash"], p["evaluator_hash"], _REPLAY_SOURCE_EPOCH)
+    cache = getattr(store, "cached_replay", None)
+    if cache is not None:
+        cached = cache(key)
+        if cached is not None:
+            return cached
+    reads = _ReplayReads(store)
+    manifest = strict_loads(reads.get(p["inputs_hash"]))
     if (
         not isinstance(manifest, dict)
         or set(manifest) != {"version", "contract", "approval", "binding", "records", "receipts"}
@@ -326,10 +363,20 @@ def replay_packet(packet, store, trust):
         binding=manifest["binding"],
         records=manifest["records"],
         receipts=manifest["receipts"],
-        store=store,
+        store=reads,
         trust=trust,
         now=milliseconds(p["evaluated_at"]),
     )
     if canonical(expected) != canonical(p) or packet["payload"]["created_at"] != p["evaluated_at"]:
         raise ClosureError("PACKET_REPLAY_MISMATCH")
+    remember = getattr(store, "remember_replay", None)
+    if remember is not None and not reads.failed:
+        try:
+            # Runtime evaluator bundles are retained. Legacy offline contracts may identify
+            # externally installed evaluator code without storing it here: full cold replay
+            # stays supported, but that case never enters the cache.
+            reads.get(p["evaluator_hash"])
+        except ClosureError:
+            return p
+        remember(key, reads.references, p)
     return p
