@@ -55,7 +55,15 @@ ROLES = {"actor", "owner", "broker", "verifier", "authority", "custodian", "oper
 HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}:[0-9]{1,5}$|^\[[0-9a-fA-F:]+\]:[0-9]{1,5}$")
 
 
-def validate_credentials(credentials):
+APPROVAL_MODES = ("single-operator", "independent")
+AUTHOR_ROLE, APPROVER_ROLE = "actor", "owner"
+
+
+def validate_credentials(credentials, approval_mode="single-operator"):
+    """Structural validation plus, in ``independent`` approval mode, separation of duties:
+    no single credential may hold both the author (``actor``) and approver (``owner``) roles."""
+    if approval_mode not in APPROVAL_MODES:
+        raise ClosureError("APPROVAL_MODE_INVALID", str(approval_mode))
     if not isinstance(credentials, dict) or not credentials:
         raise ClosureError("API_CREDENTIALS_INVALID")
     for digest_hex, principal in credentials.items():
@@ -66,19 +74,38 @@ def validate_credentials(credentials):
         roles = principal["roles"]
         if not isinstance(roles, list) or not roles or not set(roles) <= ROLES:
             raise ClosureError("API_CREDENTIALS_INVALID")
+        if approval_mode == "independent" and {AUTHOR_ROLE, APPROVER_ROLE} <= set(roles):
+            raise ClosureError(
+                "APPROVAL_SEPARATION_VIOLATED",
+                f"credential for principal {principal['principal']!r} holds both actor and owner",
+            )
     return credentials
 
 
 class CredentialSource:
     """Static credentials (tests, embedding) or a live directory re-read per request."""
 
-    def __init__(self, value=None, directory=None):
+    def __init__(self, value=None, directory=None, approval_mode="single-operator"):
         if (value is None) == (directory is None):
             raise ClosureError("API_CREDENTIALS_INVALID")
-        self._static = validate_credentials(value) if value is not None else None
+        self.approval_mode = approval_mode
+        self._static = validate_credentials(value, approval_mode) if value is not None else None
         self.directory = Path(directory) if directory is not None else None
         if self.directory is not None:
             self.current()  # fail at startup if the mount is wrong
+
+    def require(self, approval_mode):
+        """Bind this source to an approval mode and re-validate what is loaded right now.
+
+        Every later ``current()`` (live reload) re-checks the same rule, so a credential file
+        that later gains a mixed author/approver credential locks the API (nobody authenticates)
+        instead of letting one principal approve its own work."""
+        self.approval_mode = approval_mode
+        if self._static is not None:
+            validate_credentials(self._static, approval_mode)
+        else:
+            self.current()
+        return self
 
     def current(self):
         if self._static is not None:
@@ -87,7 +114,7 @@ class CredentialSource:
             raw = (self.directory / "credentials.json").read_bytes()
         except OSError as exc:
             raise ClosureError("API_CREDENTIALS_MISSING", str(self.directory)) from exc
-        return validate_credentials(strict_loads(raw))
+        return validate_credentials(strict_loads(raw), self.approval_mode)
 
     def principal(self, token):
         try:
