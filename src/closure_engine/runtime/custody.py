@@ -44,6 +44,9 @@ class LocalCustody:
         self._ledger = None
         self._lock = threading.RLock()
         self._cache = None  # (file identity, verified snapshot)
+        from .witness_gate import check_witness_configuration
+
+        check_witness_configuration(self)
 
     # ----- ledger --------------------------------------------------------------------------
     @property
@@ -125,21 +128,25 @@ class LocalCustody:
                 meta["pending_binding"] is None or body["binding"] != meta["pending_binding"]
             ):
                 raise ClosureError("BINDING_NOT_ISSUED_BY_AUTHORITY")
-            event_hash = self.ledger.append(event, expected_head)
-            self._cache = None
-            if body["state"] == "EXECUTING":
-                meta["binding"] = body["binding"]
-            if body["state"] == "BASELINED":
-                meta["manifest_hash"] = body["refs"][0]
-            if body["state"] in PACKET_STATES:
-                meta["packets"].append(digest(body["packet"]))
-                if body["state"] in VERDICT_STATES:
-                    meta["verdict_packet"] = body["packet"]
-            self._save(meta)
-            # The ledger just verified and admitted this event under our lock: sign its head
-            # directly instead of replaying the whole history again.
-            self._sign_checkpoint(body["sequence"], event_hash)
-            return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
+            from .witness_gate import witness_scope
+
+            with witness_scope(self, event, expected_head):
+                event_hash = self.ledger.append(event, expected_head)
+                self._cache = None
+                if body["state"] == "EXECUTING":
+                    meta["binding"] = body["binding"]
+                if body["state"] == "BASELINED":
+                    meta["manifest_hash"] = body["refs"][0]
+                if body["state"] in PACKET_STATES:
+                    packet_hash = digest(body["packet"])
+                    if packet_hash not in meta["packets"]:
+                        meta["packets"].append(packet_hash)
+                    if body["state"] in VERDICT_STATES:
+                        meta["verdict_packet"] = body["packet"]
+                self._save(meta)
+                # Ledger admission verified this exact event under our lock.
+                self._sign_checkpoint(body["sequence"], event_hash)
+                return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
 
     def view(self, tx):
         """One verified ledger snapshot projected for one transaction (state + technical packet)."""

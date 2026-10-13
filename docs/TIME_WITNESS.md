@@ -43,6 +43,10 @@ module alone does **not** change the existing ACE ledger's acceptance policy. Th
 does not modify old contracts, signed packets or ledger events. Integrations may call
 `ConsumerJournal.consume` with the same pins and nonce instead of spawning the CLI.
 
+The 0.4 candidate adds optional automatic custody enforcement through an operator-held
+[required witness profile](WITNESS_GATE.md), including durable consume/append reconciliation.
+Do not implement a naive consume-then-append sequence across an unrecorded crash gap.
+
 New enrollment also permits authenticated `ledger-event` subjects signed by the enrolled
 **authority**, only in native ledger states authorizing that role (including `RECOVERY_FAILED`).
 Actor-, owner- or other-role events cannot obtain this authority-event receipt. Pass the
