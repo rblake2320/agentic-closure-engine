@@ -55,6 +55,20 @@ bookkeeping. Eviction falls back to reconstruction. Legacy offline evaluator ref
 that are not physically held in custody retain their original cold semantics and cannot
 create a prefix after a failed evaluator read. Runtime evaluator bundles are retained.
 
+Runtime custody unconditionally enables a private Ledger policy requiring physical
+evaluator custody for every registered frozen contract, including cold reads and
+pre-baseline approval. There is no request or actor CLI switch to disable it. The
+legacy offline kernel policy remains unchanged. An executed cold-runtime regression
+found the distinction necessary: a changed evaluator could otherwise survive cold
+legacy replay even though the warm replay cache refused it. Both changed and deleted
+runtime bundles are now required to fail warm/cold checks; restoring bytes works.
+
+Custody status and technical-packet reads delegate to this validated Ledger snapshot
+under the custody lock. The older `(mtime, size, inode)` snapshot shortcut was removed:
+executed live PROVEN controls showed that same-metadata changes to ledger bytes, raw
+evidence, inputs or evaluators otherwise returned stale success, and a returned mutable
+dictionary could poison later status. Exact original-byte restoration is the green control.
+
 ## Repeated-release control
 
 `tools/profile_history.py` performs real installed-runtime deployment and target read-back
@@ -71,14 +85,51 @@ Retained unsuccessful predecessors are deliberately not replaced:
 | Successful packet result cache | 12 PROVEN, next fails | 25 |
 | Fixed-byte event/contract authentication cache | 18 PROVEN, next fails | 31 |
 | Binding/receipt and per-replay parse refinement | 23 PROVEN, next fails | 36 |
+| Prefix with strict evaluator and fresh high-water anchor | 33 PROVEN, next fails | 46 |
+| Complete bounded reads and once-per-invocation contract parsing | 64 PROVEN; no failure | 76 |
 
 The original live run had ten PROVEN releases then two INDETERMINATE releases; first
 protected samples arrived after the unchanged 1,000 ms leading coverage bound although
 all five admitted raw samples were PASS. Pure replay profiles confirmed increasing
 historical transition reconstruction cost. The three partial improvements did not close
-the registered 64-release gate. The authenticated-prefix result is recorded in the
-installed control receipt after that run completes. This finite control does not establish
+the registered 64-release gate. The authenticated-prefix and repaired custody results are
+recorded separately in their installed control receipts. This finite control does not establish
 an unbounded rate or 2,880 releases/day.
+
+At source `6c8bf6b`, installed preview wheel SHA-256
+`56000c8e703ce74f84ca0dc708c8de0e3c65ff3bce47161602167701cfbe4930`
+completed all 64 registered releases, followed by one successful release from a new
+process against the unchanged retained history (77 transactions, 693 events). The
+64-cycle median was 7.340 seconds, range 6.500–10.781 seconds; the largest first protected
+sample offset was 163 ms, within the unchanged 1,000 ms bound. Five samples per invariant
+were issued and received for every release; the contract required three.
+
+The last measured warm snapshot at 76 transactions took 96 ms while performing 535
+physical get/SHA validations. The earlier anchor-enforced 46-transaction failure measured
+537 ms with 325 reads; its first samples were 1,187/1,336 ms. The complete reader now
+uses a 4 KiB first chunk and bounded subsequent chunks instead of allocating MAX+1 for
+every tiny object. It still reads and hashes all admitted bytes. Actual files at zero,
+4 KiB, 64 KiB and 1 MiB boundaries, truncated files and oversized files are tested.
+Authenticated contract bytes are decoded into one fresh invocation-local dictionary;
+their physical reads, digests and exact approval authentication remain mandatory.
+
+`tools/verify_history_integrity.py` exercised the resulting 77-transaction public-only
+clone: all nine row/approval/evidence/evaluator/baseline/rollback mutations refused both
+warm and cold with matching typed reasons; all nine exact-byte restoration controls
+worked. Native full audit agreed with warm context. Its retained cache used 1,233 entries
+and 4,234,046 bytes across the shared pools. Original failed histories and intermediate
+candidate receipts remain in the private `evidence-runs` directory.
+
+Custody also authenticates its configured checkpoint file before reads and appends,
+retains an immutable in-memory high-water checkpoint, and advances the Ledger anchor
+after successful persistence. An independently executed real signed history promotion
+from checkpoint 9 to 18 works; truncation behind 18, missing files and authentic older
+files refuse while warm. A new process with an intact later history and an authentic
+older checkpoint cannot infer a previously unseen external commitment: independently
+retained latest checkpoints/witnesses remain the cold rollback boundary. A real process
+kill after SQLite append but before checkpoint publication remains reconcilable against
+the prior anchor. Exact old-event retries preserve their event hash and return the current
+global head/sequence without lowering the checkpoint.
 
 `tests/test_history_performance.py` exercises real files, database mutation, signing keys,
 cached valid/malicious suffixes, trust swaps and an owned-process kill. Its previous test
