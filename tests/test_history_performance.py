@@ -14,10 +14,12 @@ from pathlib import Path
 import pytest
 from test_ledger import begin, event
 from test_ledger import packet as ledger_packet
+from test_runtime_e2e import artifact, run_to_verdict, world  # noqa: F401 - real HTTP fixture
 
 from closure_engine.crypto import TrustStore, sign
 from closure_engine.ledger import Ledger
 from closure_engine.protocol import GENESIS, ClosureError, canonical, digest, timestamp
+from closure_engine.runtime import Runtime
 from closure_engine.store import EvidenceStore
 from closure_engine.verdicts import close_run, replay_packet
 
@@ -419,3 +421,65 @@ def test_real_process_kill_after_validated_prefix_before_append_cold_replays(run
     cold.append(request, cold.head)
     assert cold.state("transaction-1") == "VERIFYING"
     assert not list(tmp_path.rglob("*prefix*.json"))
+
+
+@pytest.mark.parametrize("subject", ("ledger", "evidence", "inputs", "evaluator"))
+def test_live_custody_same_metadata_mutation_refuses_status_and_packet(world, subject):  # noqa: F811
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    _, result = run_to_verdict(runtime, "custody-integrity", artifact(2))
+    assert result["verdict"] == "PROVEN"
+    runtime.accept("custody-integrity")
+    assert runtime.status("custody-integrity")["state"] == "ACCEPTED"
+    custody = runtime.custody
+    packet = custody.technical_packet("custody-integrity")
+    body = packet["payload"]["body"]
+    if subject == "ledger":
+        path = custody.ledger.path
+        saved, stat = path.read_bytes(), path.stat()
+        with sqlite3.connect(path) as db:
+            from closure_engine.protocol import strict_loads
+
+            first = strict_loads(db.execute("SELECT envelope FROM events WHERE sequence=1").fetchone()[0])
+            before = first["payload"]["created_at"]
+            # Same length and valid timestamp, but no longer the bytes the actor signed.
+            first["payload"]["created_at"] = before[:-4] + ("001Z" if before[-4:] != "001Z" else "002Z")
+            db.execute(
+                "UPDATE events SET envelope=?,event_hash=? WHERE sequence=1",
+                (canonical(first), digest(first)),
+            )
+    else:
+        reference = (
+            body[subject + "_hash"]
+            if subject != "evidence"
+            else (custody.records("custody-integrity")[0]["observation"]["payload"]["body"]["evidence_hash"])
+        )
+        path = custody.store.path_for(reference)
+        saved, stat = path.read_bytes(), path.stat()
+        path.write_bytes(bytes([saved[0] ^ 1]) + saved[1:])
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert path.stat().st_size == stat.st_size and path.stat().st_mtime_ns == stat.st_mtime_ns
+    try:
+        for read in (
+            lambda: runtime.status("custody-integrity"),
+            lambda: custody.technical_packet("custody-integrity"),
+        ):
+            with pytest.raises(ClosureError):
+                read()
+    finally:
+        path.write_bytes(saved)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert runtime.status("custody-integrity")["state"] == "ACCEPTED"
+    assert custody.technical_packet("custody-integrity") == packet
+
+
+def test_live_custody_returned_snapshot_mutation_never_poison_status(world):  # noqa: F811
+    deployment, pin, _ = world
+    runtime = Runtime(deployment, pin)
+    _, result = run_to_verdict(runtime, "custody-copy", artifact(2))
+    assert result["verdict"] == "PROVEN"
+    expected = runtime.status("custody-copy")
+    returned = runtime.custody.snapshot()
+    returned["transactions"]["custody-copy"] = "DISPROVEN"
+    returned["packets"]["custody-copy"]["signature"] = "00" * 64
+    assert runtime.status("custody-copy") == expected

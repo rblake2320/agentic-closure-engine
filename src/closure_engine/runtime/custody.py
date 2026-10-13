@@ -78,19 +78,14 @@ class LocalCustody:
         return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
     def snapshot(self):
-        """Verified ledger snapshot, re-verified in full whenever the database file changes.
+        """Fresh physical ledger/evidence validation, with authenticated prefix reuse.
 
-        Appends always run the ledger's full admission. Reads reuse the last verified snapshot
-        only while the file is byte-for-byte unchanged on disk (mtime, size, inode).
+        File metadata cannot certify unchanged bytes or custody completeness. Ledger owns
+        the process-local immutable context and validates its actual inputs on every reuse.
+        Each returned snapshot is independent of prior callers' mutable dictionaries.
         """
         with self._lock:
-            before = self._file_identity()
-            if self._cache is not None and before is not None and self._cache[0] == before:
-                return self._cache[1]
-            snapshot = self.ledger.snapshot()
-            after = self._file_identity()
-            self._cache = (after, snapshot) if before == after and after is not None else None
-            return snapshot
+            return self.ledger.snapshot()
 
     def position(self):
         snapshot = self.snapshot()
