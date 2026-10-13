@@ -199,8 +199,26 @@ def execute(args):
         )
     else:
         runtime = Runtime(deployment, pin, custody=local)
+    server_threads = []
     for server in servers:
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        server_threads.append(thread)
+    servers_stopped = False
+
+    def stop_servers():
+        nonlocal servers_stopped
+        if servers_stopped:
+            return
+        for server in reversed(servers):
+            server.shutdown()
+            server.server_close()
+        for thread in server_threads:
+            thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError("OWNED_SERVER_THREAD_DID_NOT_STOP")
+        servers_stopped = True
+
     results, failures = [], 0
     current = json.loads(target.target.raw)["routes"]["/answer"]["answer"]
     try:
@@ -250,6 +268,9 @@ def execute(args):
             )
             if args.stop_after_failures and failures >= args.stop_after_failures:
                 break
+        # cProfile's monitoring can see another thread's waits on recent Python versions.
+        # No service thread remains before the separate read-only CPU profile begins.
+        stop_servers()
         profile_result = snapshot_profile(local, output) if args.profile else None
         receipt = {
             "status": "Failed" if failures else "Worked",
@@ -259,18 +280,12 @@ def execute(args):
             "non_proven": failures,
             "profile": profile_result,
             "first_failure": next((entry for entry in results if entry["verdict"] != "PROVEN"), None),
-            "own_servers_stopped": False,
+            "own_servers_stopped": servers_stopped,
         }
         write(output / "receipt.json", receipt)
         return receipt
     finally:
-        for server in reversed(servers):
-            server.shutdown()
-            server.server_close()
-        if (output / "receipt.json").is_file():
-            receipt = json.loads((output / "receipt.json").read_bytes())
-            receipt["own_servers_stopped"] = True
-            write(output / "receipt.json", receipt)
+        stop_servers()
 
 
 def main():

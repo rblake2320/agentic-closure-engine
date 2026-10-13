@@ -1,6 +1,8 @@
 """Signed event replay, SQLite atomic append and independent checkpoint verification."""
 
 import sqlite3
+import sys
+from collections import OrderedDict
 from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
@@ -143,7 +145,26 @@ class Ledger:
                 remember("event", key, (raw,))
         return envelope
 
-    def _apply(self, envelope, states, packets, bindings, contracts, input_sets, *, _authenticated=False):
+    def _fixed_envelope(self, envelope, purpose):
+        authenticate = getattr(self.store, "authenticate_envelope", None)
+        return (
+            verify(envelope, purpose, self.trust)
+            if authenticate is None
+            else authenticate(envelope, purpose, self.trust, _AUTH_SOURCE_EPOCH)
+        )
+
+    def _apply(
+        self,
+        envelope,
+        states,
+        packets,
+        bindings,
+        contracts,
+        input_sets,
+        *,
+        _authenticated=False,
+        _parse_context=None,
+    ):
         # Only the private physically read/canonical/authenticated row path sets this flag;
         # append/RPC/scoped replays cannot supply a caller-controlled preverified body.
         b = envelope["payload"]["body"] if _authenticated else verify(envelope, "ledger-event", self.trust)
@@ -151,7 +172,7 @@ class Ledger:
         if tx not in contracts or b["contract_hash"] != contracts[tx].hash:
             raise ClosureError("EVENT_CONTRACT_MISMATCH")
         frozen = contracts[tx]
-        c = frozen.data
+        c = frozen.data if _parse_context is None else _parse_context["contracts"][tx]
         state, old = b["state"], states.get(tx)
         role = self.trust.record(envelope["payload"]["key_id"])["role"]
         if role not in ROLES[state]:
@@ -164,8 +185,32 @@ class Ledger:
             p = replay_packet(b["packet"], self.store, self.trust)
             if tx in bindings and p["binding_hash"] != digest(bindings[tx]):
                 raise ClosureError("VERDICT_ARTIFACT_BINDING_MISMATCH")
-            manifest = strict_loads(self.store.get(p["inputs_hash"]))
-            current = {digest(value) for value in manifest["records"] + manifest["receipts"]}
+            raw_inputs = self.store.get(p["inputs_hash"])
+            if digest(raw_inputs) != p["inputs_hash"]:
+                raise ClosureError("EVIDENCE_HASH_MISMATCH")
+            memo = None if _parse_context is None else _parse_context["inputs"].get(p["inputs_hash"])
+            if memo is not None and memo[0] == raw_inputs:
+                current = memo[1]
+            else:
+                manifest = strict_loads(raw_inputs)
+                current = frozenset(digest(value) for value in manifest["records"] + manifest["receipts"])
+                parse_weight = (
+                    sys.getsizeof(raw_inputs)
+                    + sys.getsizeof(current)
+                    + sum(sys.getsizeof(value) for value in current)
+                    + 256
+                )
+                if _parse_context is not None and parse_weight <= 8 * 1024 * 1024:
+                    # Ephemeral parse/digest facts only, scoped to THIS full replay. Fresh
+                    # physical custody read and SHA verification above are never skipped.
+                    while _parse_context["inputs"] and (
+                        len(_parse_context["inputs"]) >= 128
+                        or _parse_context["bytes"] + parse_weight > 8 * 1024 * 1024
+                    ):
+                        _, old_inputs = _parse_context["inputs"].popitem(last=False)
+                        _parse_context["bytes"] -= old_inputs[2]
+                    _parse_context["inputs"][p["inputs_hash"]] = (raw_inputs, current, parse_weight)
+                    _parse_context["bytes"] += parse_weight
             prior = input_sets.get(tx, {"records": set(), "evaluated_at": -1})
             if not prior["records"] <= current:
                 raise ClosureError("LEDGERED_EVIDENCE_OMITTED")
@@ -242,7 +287,7 @@ class Ledger:
         if state == "EXECUTING":
             if b["binding"] is None:
                 raise ClosureError("RUN_BINDING_REQUIRED")
-            binding = verify(b["binding"], "run-binding", self.trust)
+            binding = self._fixed_envelope(b["binding"], "run-binding")
             if any(
                 binding[k] != v
                 for k, v in {
@@ -257,7 +302,7 @@ class Ledger:
         if state == "VERIFYING":
             if b["receipt"] is None:
                 raise ClosureError("ACTION_RECEIPT_REQUIRED")
-            receipt = verify(b["receipt"], "action-receipt", self.trust)
+            receipt = self._fixed_envelope(b["receipt"], "action-receipt")
             binding = bindings[tx]["payload"]["body"]
             if any(
                 receipt[k] != binding[k]
@@ -322,6 +367,11 @@ class Ledger:
         semantics are deliberately not evaluated or represented as verified transaction states.
         """
         states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
+        parse_context = {
+            "contracts": {tx: value.data for tx, value in contracts.items()},
+            "inputs": OrderedDict(),
+            "bytes": 0,
+        }
         head, seq, last_event_time = GENESIS, 0, None
         seen_event_ids = set()
         for row_seq, event_id, raw, stored_hash in rows:
@@ -341,7 +391,16 @@ class Ledger:
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
             seen_event_ids.add(event_id)
             if scope is None or b["transaction_id"] in scope:
-                self._apply(envelope, states, packets, bindings, contracts, input_sets, _authenticated=True)
+                self._apply(
+                    envelope,
+                    states,
+                    packets,
+                    bindings,
+                    contracts,
+                    input_sets,
+                    _authenticated=True,
+                    _parse_context=parse_context,
+                )
             elif self.trust.record(envelope["payload"]["key_id"])["role"] not in ROLES[b["state"]]:
                 raise ClosureError("STATE_AUTHORITY_DENIED")
             head, seq = stored_hash, row_seq

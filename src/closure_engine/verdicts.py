@@ -336,7 +336,12 @@ def close_run(*, authority, ledger_head, **args):
 
 def replay_packet(packet, store, trust):
     """Reconstruct every signed claim without access to the authority private key."""
-    p = verify(packet, "closure-packet", trust)
+    authenticate = getattr(store, "authenticate_envelope", None)
+    p = (
+        verify(packet, "closure-packet", trust)
+        if authenticate is None
+        else authenticate(packet, "closure-packet", trust, _REPLAY_SOURCE_EPOCH)
+    )
     key = (digest(packet), trust.hash, p["policy_hash"], p["evaluator_hash"], _REPLAY_SOURCE_EPOCH)
     cache = getattr(store, "cached_replay", None)
     if cache is not None:

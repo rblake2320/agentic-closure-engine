@@ -89,6 +89,18 @@ class EvidenceStore:
             raise ClosureError("AUTHENTICATION_CACHE_BYTES_REQUIRED")
         self._memo_remember(("auth/" + namespace, *key), (), blobs)
 
+    def authenticate_envelope(self, envelope, purpose, trust, source_epoch):
+        """Authenticate exact newly canonicalized signed bytes, never state or eligibility."""
+        from .crypto import verify
+
+        raw = canonical(envelope)
+        key = (purpose, digest(raw), trust.hash, source_epoch)
+        if not self.authentication_cached("event", key, (raw,)):
+            verify(envelope, purpose, trust)
+            self.remember_authentication("event", key, (raw,))
+        # Independent copy tied to the canonical bytes, not a caller-owned mutable body.
+        return strict_loads(raw)["payload"]["body"]
+
     def _memo_remember(self, key, references, payload):
         payload_size = sys.getsizeof(payload)
         if isinstance(payload, tuple):
