@@ -59,11 +59,13 @@ $("login-form").onsubmit = async (e) => {
     $("principal").textContent =
       identity.principal + " · " + identity.roles.join(", ");
     $("approval-mode").textContent =
-      identity.approval_mode === "single-operator-administration"
-        ? "Single-operator administration; human approval is not independent."
-        : identity.approval_mode === "role-scoped"
-          ? "Roles restricted. This session is limited to the roles shown."
-          : "Approval mode unavailable. Review the operator's role delegation.";
+      identity.approval_mode === "independent-approval"
+        ? "Independent approval enforced: no credential may both author and approve."
+        : identity.approval_mode === "single-operator-administration"
+          ? "Single-operator administration; human approval is not independent."
+          : identity.approval_mode === "role-scoped"
+            ? "Roles restricted. This session is limited to the roles shown."
+            : "Approval mode unavailable. Review the operator's role delegation.";
     $("propose").hidden = !identity.roles.includes("actor");
     $("login").hidden = true;
     $("console").hidden = false;

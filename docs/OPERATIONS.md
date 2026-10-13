@@ -60,6 +60,28 @@ file. Native `closure-engine init`, `enroll`, `target-enroll`, `tx`, `checkpoint
 and `reconcile` commands support operator-owned installations. Verification requires an
 operator-held `--expected-trust-hash`; caller-selected clocks are not runtime inputs.
 
+### Approval mode (separation of duties)
+
+`api-serve --approval-mode single-operator` (default) keeps one credential free to hold every
+role; `/api/v1/whoami` and the console disclose `single-operator-administration` for such a
+credential, so approval by it is visible as not independent. `--approval-mode independent`
+enforces separation: the gateway refuses to start if any credential holds both `actor`
+(author) and `owner` (approver), reports `APPROVAL_SEPARATION_VIOLATED` naming the principal,
+and on live reload a credential file that gains such a credential locks the API (every request
+is 401) until the file is corrected. Proposals and recovery requests then carry the actor key,
+approvals the owner key. Separation is enforced per principal name, not per token: the union of
+roles across every credential enrolled for one principal must not span `actor` and `owner`, so an
+alias (one person, two tokens) is refused like a mixed token. The authenticated proposing
+principal is persisted with the transaction in custody at the receiving boundary (never taken
+from a request body, never held only in gateway memory), and independent mode refuses an approval
+by that same principal even after its actor token was revoked and it was re-enrolled as owner
+(`403 APPROVAL_SEPARATION_REQUIRED`). Transactions proposed without a bound principal (CLI or
+pre-0.4 history) are refused in independent mode (`409 AUTHOR_BINDING_MISSING`) rather than
+assumed independent; the default mode records attribution and refuses nothing. `whoami` reports
+`independent-approval`; `status` shows `proposed_by` and `approved_by`. This separates
+credentials and principal names, not people: issue the actor and owner tokens to different humans
+or systems, keep them in different custody, and do not enroll one person under two names.
+
 ## Cold backup and anchored restore
 
 Stop/start preserves all volumes. Backup stops only this deployment, encrypts its state,

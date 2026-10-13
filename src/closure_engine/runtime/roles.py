@@ -47,9 +47,24 @@ STATUS = {
     "INPUT_TOO_LARGE": 413,
     "OBSERVATION_WINDOW_OPEN": 409,
     "STALE_LEDGER_HEAD": 409,
+    "AUTHOR_BINDING_MISSING": 409,
+    "APPROVAL_SEPARATION_REQUIRED": 403,
     "SERVICE_UNREACHABLE": 502,
     "TARGET_UNREACHABLE": 502,
 }
+ATTRIBUTION = {"proposed_by", "approved_by", "require_independent"}
+
+
+def _attribution(body):
+    """Gateway-to-role-service attribution. Only an authenticated operator principal reaches
+    this handler; the public API never accepts these fields from a client (api.propose_args)."""
+    fields = {k: body.pop(k) for k in ATTRIBUTION if k in body}
+    for key in ("proposed_by", "approved_by"):
+        if key in fields and fields[key] is not None and not (isinstance(fields[key], str) and fields[key]):
+            raise ClosureError("INVALID_REQUEST", key)
+    if "require_independent" in fields and not isinstance(fields["require_independent"], bool):
+        raise ClosureError("INVALID_REQUEST", "require_independent")
+    return fields
 
 
 def propose_args(body):
@@ -121,9 +136,12 @@ class _RoleHandler(ServiceHandler):
 
     def _dispatch(self, action, method, body):
         runtime = self.server.runtime
+        attribution = _attribution(body)
         if action == "propose":
             target, tx, artifact, intent, options = propose_args(body)
-            return runtime.propose(target, tx, artifact, intent=intent, **options)
+            return runtime.propose(
+                target, tx, artifact, intent=intent, proposed_by=attribution.get("proposed_by"), **options
+            )
         if action == "reconcile":
             if body:
                 raise ClosureError("INVALID_REQUEST")
@@ -136,6 +154,14 @@ class _RoleHandler(ServiceHandler):
             if phase not in {"all", "instant", "window"}:
                 raise ClosureError("INVALID_REQUEST")
             return runtime.observe(body["transaction_id"], phase=phase)
+        if action == "recover":
+            return runtime.begin_recovery(body["transaction_id"], proposed_by=attribution.get("proposed_by"))
+        if action == "approve":
+            return runtime.approve(
+                body["transaction_id"],
+                approved_by=attribution.get("approved_by"),
+                require_independent=attribution.get("require_independent", False),
+            )
         return getattr(runtime, method)(body["transaction_id"])
 
 
@@ -153,21 +179,26 @@ class DistributedRuntime:
     def _call(self, role, action, body):
         return self.services[role].call("POST", "/role/v1/" + action, body)
 
-    def propose(self, target_id, transaction_id, artifact, *, intent, **options):
+    def propose(self, target_id, transaction_id, artifact, *, intent, proposed_by=None, **options):
         body = {
             "target_id": target_id,
             "transaction_id": transaction_id,
             "artifact_base64": base64.b64encode(artifact).decode(),
             "intent": intent,
+            "proposed_by": proposed_by,
             **options,
         }
         return self._call("actor", "propose", body)
 
-    def begin_recovery(self, tx):
-        return self._call("actor", "recover", {"transaction_id": tx})
+    def begin_recovery(self, tx, *, proposed_by=None):
+        return self._call("actor", "recover", {"transaction_id": tx, "proposed_by": proposed_by})
 
-    def approve(self, tx):
-        return self._call("owner", "approve", {"transaction_id": tx})
+    def approve(self, tx, *, approved_by=None, require_independent=False):
+        return self._call(
+            "owner",
+            "approve",
+            {"transaction_id": tx, "approved_by": approved_by, "require_independent": require_independent},
+        )
 
     def accept(self, tx):
         return self._call("owner", "accept", {"transaction_id": tx})
@@ -253,6 +284,8 @@ class DistributedRuntime:
             "transaction_id": tx,
             "state": view["state"] or "PROPOSED",
             "approved": meta["approval"] is not None,
+            "proposed_by": meta.get("proposed_by"),
+            "approved_by": meta.get("approved_by"),
             "target_id": meta["target_id"],
             "contract_hash": digest(meta["contract"]),
             "artifact_hash": meta["artifact_hash"],
@@ -276,3 +309,8 @@ class DistributedRuntime:
         from .portable import export_bundle
 
         return export_bundle(self.custody, tx)
+
+    def time_assurance(self, tx):
+        from ..time_assurance import export_time_assurance
+
+        return export_time_assurance(self.custody, tx)

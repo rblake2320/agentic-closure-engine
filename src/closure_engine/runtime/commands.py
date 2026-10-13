@@ -19,6 +19,7 @@ from .deployment import Deployment, enroll, enroll_target
 from .files import create_exclusive, replace_json
 from .identities import ROLES, init_identity
 from .roles import ROLE_ACTIONS, DistributedRuntime, RoleServer
+from .rpc import APPROVAL_MODES
 from .service import Runtime, artifact_bytes
 from .target import ReferenceTarget, ReferenceTargetServer
 
@@ -133,6 +134,8 @@ def _service_args(parser, default_port=None):
     parser.add_argument(
         "--credentials", required=True, help="Credentials directory (live reload, mount read-only) or file"
     )
+    parser.add_argument("--tls-cert-file", help="Operator-enrolled PEM certificate/chain for HTTPS")
+    parser.add_argument("--tls-key-file", help="Private PEM certificate key; required with --tls-cert-file")
 
 
 def register_api(sub):
@@ -153,6 +156,12 @@ def register_api(sub):
     p.add_argument("--expected-trust-hash", default=os.environ.get("ACE_EXPECTED_TRUST_HASH"))
     p.add_argument("--services", help="Keyless gateway mode: JSON file naming role services and custody")
     p.add_argument("--static-dir", help="Same-origin UI files")
+    p.add_argument(
+        "--approval-mode",
+        choices=APPROVAL_MODES,
+        default="single-operator",
+        help="independent: refuse any credential holding both actor and owner (separation of duties)",
+    )
     _service_args(p)
     p = sub.add_parser("custody-serve", help="Protected custody service (holds only the custodian key)")
     _pin(p)
@@ -212,9 +221,19 @@ def _read_token(path):
     return token
 
 
-def _serve(server, name):
+def _serve(server, name, *, cert_file=None, key_file=None):
+    from .tls import secure_server
+
+    secure_server(server, cert_file, key_file)
     print(
-        json.dumps({"service": name, "bind": server.server_address[0], "port": server.server_address[1]}),
+        json.dumps(
+            {
+                "service": name,
+                "bind": server.server_address[0],
+                "port": server.server_address[1],
+                "transport": getattr(server, "transport_scheme", "http"),
+            }
+        ),
         flush=True,
     )
     try:
@@ -242,9 +261,14 @@ def _serve_api(args):
         runtime = _runtime(args)
     static = args.static_dir or packaged_ui()
     server = ApiServer(
-        (args.bind, args.port), runtime, load_credentials(args.credentials), static, hosts=args.allowed_host
+        (args.bind, args.port),
+        runtime,
+        load_credentials(args.credentials),
+        static,
+        hosts=args.allowed_host,
+        approval_mode=args.approval_mode,
     )
-    _serve(server, "ace-runtime-api")
+    _serve(server, "ace-runtime-api", cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def _serve_custody(args):
@@ -257,7 +281,7 @@ def _serve_custody(args):
         hosts=args.allowed_host,
         credentials=load_credentials(args.credentials),
     )
-    _serve(server, "ace-custody")
+    _serve(server, "ace-custody", cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def _serve_role(args):
@@ -271,7 +295,7 @@ def _serve_role(args):
         hosts=args.allowed_host,
         credentials=load_credentials(args.credentials),
     )
-    _serve(server, "ace-role-" + args.role)
+    _serve(server, "ace-role-" + args.role, cert_file=args.tls_cert_file, key_file=args.tls_key_file)
 
 
 def packaged_ui():

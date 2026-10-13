@@ -146,6 +146,7 @@ class Runtime:
         allow_partial=False,
         parent=None,
         parent_transaction=None,
+        proposed_by=None,
     ):
         """Actor: stage the artifact and draft a contract from the enrolled target profile.
 
@@ -244,9 +245,9 @@ class Runtime:
             "current_baseline_hash": self.store.put(current),
             "settle_ms": settle_ms,
         }
-        return self.custody.create_tx(proposal, parent_transaction)
+        return self.custody.create_tx(proposal, parent_transaction, proposed_by=proposed_by)
 
-    def begin_recovery(self, tx):
+    def begin_recovery(self, tx, *, proposed_by=None):
         """Actor: draft the child transaction that restores the parent's baseline artifact."""
         meta = self._tx(tx)
         packet = meta.get("verdict_packet")
@@ -283,19 +284,32 @@ class Runtime:
             settle_ms=meta["settle_ms"],
             parent=inherited,
             parent_transaction=tx,
+            proposed_by=proposed_by,
         )
 
     # ----- owner ---------------------------------------------------------------------------
-    def approve(self, tx):
-        """Owner: sign the exact contract hash; custody registers it; record DRAFT and APPROVED."""
+    def approve(self, tx, *, approved_by=None, require_independent=False):
+        """Owner: sign the exact contract hash; custody registers it; record DRAFT and APPROVED.
+
+        ``approved_by``/``require_independent`` come from the receiving boundary. Custody
+        enforces the separation under its lock; the pre-check here only avoids signing an
+        approval that custody would refuse.
+        """
         meta = self._tx(tx)
+        if meta["approval"] is not None:
+            raise ClosureError("ALREADY_APPROVED", tx)
+        from .custody import LocalCustody
+
+        LocalCustody.check_approver(meta, approved_by, require_independent)
         body = {
             "contract_hash": digest(meta["contract"]),
             "trust_hash": self.trust.hash,
             "policy_hash": meta["contract"]["policy_hash"],  # frozen policy, not the current default
         }
         approval = sign(self._identity("owner"), "approval", body, self.clock.now())
-        self.custody.set_approval(tx, approval)
+        self.custody.set_approval(
+            tx, approval, approved_by=approved_by, require_independent=require_independent
+        )
         self._append("owner", tx, "DRAFT")
         self._append("owner", tx, "APPROVED")
         return self.status(tx)
@@ -817,6 +831,8 @@ class Runtime:
             "transaction_id": tx,
             "state": view["state"] or "PROPOSED",
             "approved": meta["approval"] is not None,
+            "proposed_by": meta.get("proposed_by"),
+            "approved_by": meta.get("approved_by"),
             "target_id": meta["target_id"],
             "contract_hash": digest(meta["contract"]),
             "artifact_hash": meta["artifact_hash"],
@@ -836,6 +852,11 @@ class Runtime:
         from .portable import export_bundle
 
         return export_bundle(self.custody, tx)
+
+    def time_assurance(self, tx):
+        from ..time_assurance import export_time_assurance
+
+        return export_time_assurance(self.custody, tx)
 
 
 def artifact_bytes(path):

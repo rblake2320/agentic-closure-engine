@@ -15,7 +15,7 @@ import threading
 from ..contracts import freeze
 from ..crypto import sign, verify
 from ..ledger import Ledger
-from ..protocol import GENESIS, POLICY_HASH, ClosureError, digest, strict_loads, validate
+from ..protocol import GENESIS, POLICY_HASH, ClosureError, canonical, digest, strict_loads, validate
 from ..store import EvidenceStore
 from . import evaluator
 from .clock import SystemClock
@@ -44,6 +44,10 @@ class LocalCustody:
         self._ledger = None
         self._lock = threading.RLock()
         self._cache = None  # (file identity, verified snapshot)
+        self._checkpoint_high_water = None  # immutable authenticated bytes, never caller-owned dict
+        from .witness_gate import check_witness_configuration
+
+        check_witness_configuration(self)
 
     # ----- ledger --------------------------------------------------------------------------
     @property
@@ -60,7 +64,9 @@ class LocalCustody:
                 # anchor without its ledger is verified against the recreated empty history,
                 # which fails for any anchor beyond genesis (truncation).
                 checkpoint = read_json(anchor, "CHECKPOINT_MISSING")
-                self._ledger = Ledger(path, self.trust, self.store, checkpoint=checkpoint)
+                self._ledger = Ledger(
+                    path, self.trust, self.store, checkpoint=checkpoint, _require_evaluator_custody=True
+                )
         return self._ledger
 
     def _custodian(self):
@@ -75,19 +81,40 @@ class LocalCustody:
         return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
     def snapshot(self):
-        """Verified ledger snapshot, re-verified in full whenever the database file changes.
+        """Fresh physical ledger/evidence validation, with authenticated prefix reuse.
 
-        Appends always run the ledger's full admission. Reads reuse the last verified snapshot
-        only while the file is byte-for-byte unchanged on disk (mtime, size, inode).
+        File metadata cannot certify unchanged bytes or custody completeness. Ledger owns
+        the process-local immutable context and validates its actual inputs on every reuse.
+        Each returned snapshot is independent of prior callers' mutable dictionaries.
         """
         with self._lock:
-            before = self._file_identity()
-            if self._cache is not None and before is not None and self._cache[0] == before:
-                return self._cache[1]
-            snapshot = self.ledger.snapshot()
-            after = self._file_identity()
-            self._cache = (after, snapshot) if before == after and after is not None else None
-            return snapshot
+            self._refresh_anchor()
+            return self.ledger.snapshot()
+
+    def _refresh_anchor(self):
+        """Authenticate the configured file and never lower an observed commitment.
+
+        The native Ledger still reconstructs the referenced history. A signed checkpoint
+        is an integrity anchor, never permission to import its claimed semantic state.
+        """
+        ledger = self.ledger
+        checkpoint = read_json(self.root / "checkpoint.json", "CHECKPOINT_MISSING")
+        body = verify(checkpoint, "checkpoint", self.trust)
+        retained = (
+            ledger.anchor
+            if self._checkpoint_high_water is None
+            else strict_loads(self._checkpoint_high_water)
+        )
+        prior = verify(retained, "checkpoint", self.trust)
+        if (
+            body["trust_hash"] != self.trust.hash
+            or body["sequence"] < prior["sequence"]
+            or (body["sequence"] == prior["sequence"] and body["head_hash"] != prior["head_hash"])
+        ):
+            raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
+        raw = canonical(checkpoint)
+        self._checkpoint_high_water = raw
+        ledger.anchor = strict_loads(raw)
 
     def position(self):
         snapshot = self.snapshot()
@@ -106,40 +133,65 @@ class LocalCustody:
 
     def checkpoint(self):
         with self._lock:
+            self._refresh_anchor()
             checkpoint = self.ledger.checkpoint(self._custodian(), self.clock.now())
             replace_json(self.root / "checkpoint.json", checkpoint)
+            self._checkpoint_high_water = canonical(checkpoint)
+            self.ledger.anchor = strict_loads(self._checkpoint_high_water)
             return checkpoint
 
     def _sign_checkpoint(self, sequence, head):
+        if self._ledger is not None:
+            self._refresh_anchor()
+            actual_head, actual_sequence = self._ledger.position
+            if sequence > actual_sequence or (sequence == actual_sequence and head != actual_head):
+                raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
+            # An exact old-event retry must not sign an older head. Anchor the freshly
+            # validated current position, including a committed suffix from a crash.
+            sequence, head = actual_sequence, actual_head
         body = {"sequence": sequence, "head_hash": head, "trust_hash": self.trust.hash}
         checkpoint = sign(self._custodian(), "checkpoint", body, self.clock.now())
         replace_json(self.root / "checkpoint.json", checkpoint)
+        self._checkpoint_high_water = canonical(checkpoint)
+        if self._ledger is not None:
+            self._ledger.anchor = strict_loads(self._checkpoint_high_water)
         return checkpoint
 
     def append(self, event, expected_head):
         """Admit one signed ledger event, then derive records from what the ledger accepted."""
         with self._lock:
+            self._refresh_anchor()
             body = verify(event, "ledger-event", self.trust)
             meta = self.tx(body["transaction_id"])
             if body["state"] == "EXECUTING" and (
                 meta["pending_binding"] is None or body["binding"] != meta["pending_binding"]
             ):
                 raise ClosureError("BINDING_NOT_ISSUED_BY_AUTHORITY")
-            event_hash = self.ledger.append(event, expected_head)
-            self._cache = None
-            if body["state"] == "EXECUTING":
-                meta["binding"] = body["binding"]
-            if body["state"] == "BASELINED":
-                meta["manifest_hash"] = body["refs"][0]
-            if body["state"] in PACKET_STATES:
-                meta["packets"].append(digest(body["packet"]))
-                if body["state"] in VERDICT_STATES:
-                    meta["verdict_packet"] = body["packet"]
-            self._save(meta)
-            # The ledger just verified and admitted this event under our lock: sign its head
-            # directly instead of replaying the whole history again.
-            self._sign_checkpoint(body["sequence"], event_hash)
-            return {"event_hash": event_hash, "head": event_hash, "sequence": body["sequence"]}
+            from .witness_gate import witness_scope
+
+            with witness_scope(self, event, expected_head):
+                event_hash = self.ledger.append(event, expected_head)
+                self._cache = None
+                if body["state"] == "EXECUTING":
+                    meta["binding"] = body["binding"]
+                if body["state"] == "BASELINED":
+                    meta["manifest_hash"] = body["refs"][0]
+                if body["state"] in PACKET_STATES:
+                    packet_hash = digest(body["packet"])
+                    if packet_hash not in meta["packets"]:
+                        meta["packets"].append(packet_hash)
+                    if body["state"] in VERDICT_STATES:
+                        meta["verdict_packet"] = body["packet"]
+                self._save(meta)
+                # Exact old-event retries retain their receipt subject without lowering
+                # the authenticated current checkpoint or advertised global position.
+                checkpoint = self._sign_checkpoint(body["sequence"], event_hash)
+                current = checkpoint["payload"]["body"]
+                return {
+                    "event_hash": event_hash,
+                    "head": current["head_hash"],
+                    "sequence": current["sequence"],
+                }
 
     def view(self, tx):
         """One verified ledger snapshot projected for one transaction (state + technical packet)."""
@@ -209,6 +261,13 @@ class LocalCustody:
             }
 
     # ----- evidence ------------------------------------------------------------------------
+    def witness_record(self, event_hash):
+        """Read-only authenticated public temporal sidecar for an admitted event."""
+        from .witness_gate import witness_record
+
+        with self._lock:
+            return witness_record(self, event_hash)
+
     def evidence_get(self, evidence_hash):
         return self.store.get(evidence_hash)
 
@@ -231,11 +290,18 @@ class LocalCustody:
     def _save(self, meta):
         replace_json(self._path(meta["transaction_id"]), meta)
 
-    def create_tx(self, proposal, parent_transaction=None):
-        """Actor proposal: contract draft plus staged artifact and baseline bytes in custody."""
+    def create_tx(self, proposal, parent_transaction=None, *, proposed_by=None):
+        """Actor proposal: contract draft plus staged artifact and baseline bytes in custody.
+
+        ``proposed_by`` is the authenticated principal name supplied by the receiving boundary
+        (never a client body field). It is persisted with the transaction so that independent
+        approval can refuse the same principal later, whatever tokens it holds by then.
+        """
         with self._lock:
             if not isinstance(proposal, dict) or set(proposal) != META_FIELDS:
                 raise ClosureError("INVALID_PROPOSAL")
+            if proposed_by is not None and not (isinstance(proposed_by, str) and proposed_by):
+                raise ClosureError("INVALID_PROPOSAL", "proposed_by")
             contract = proposal["contract"]
             validate("closure-contract", contract)
             tx = proposal["transaction_id"]
@@ -277,6 +343,8 @@ class LocalCustody:
                     raise ClosureError("RECOVERY_PRECONDITION_MISMATCH")
             meta = dict(
                 proposal,
+                proposed_by=proposed_by,
+                approved_by=None,
                 approval=None,
                 binding=None,
                 pending_binding=None,
@@ -292,14 +360,35 @@ class LocalCustody:
                 self._save(parent)
             return {"transaction_id": tx, "contract_hash": digest(contract), "state": "PROPOSED"}
 
-    def set_approval(self, tx, approval):
+    @staticmethod
+    def check_approver(meta, approved_by, require_independent):
+        """Independent approval: the approver must be a bound, different principal.
+
+        Legacy transactions without a bound proposer are refused rather than assumed
+        independent; normal single-operator mode records attribution and refuses nothing.
+        """
+        if approved_by is not None and not (isinstance(approved_by, str) and approved_by):
+            raise ClosureError("INVALID_REQUEST", "approved_by")
+        if not require_independent:
+            return
+        proposer = meta.get("proposed_by")
+        if not proposer:
+            raise ClosureError("AUTHOR_BINDING_MISSING", meta["transaction_id"])
+        if not approved_by or approved_by == proposer:
+            raise ClosureError(
+                "APPROVAL_SEPARATION_REQUIRED", "approval must come from a principal other than the proposer"
+            )
+
+    def set_approval(self, tx, approval, *, approved_by=None, require_independent=False):
         """Owner approval: verified, frozen and registered before any lifecycle event."""
         with self._lock:
             meta = self.tx(tx)
             if meta["approval"] is not None:
                 raise ClosureError("ALREADY_APPROVED", tx)
+            self.check_approver(meta, approved_by, require_independent)
             frozen = freeze(meta["contract"], approval, self.trust)
             meta["approval"] = approval
+            meta["approved_by"] = approved_by
             self.ledger.register(frozen)
             self._cache = None
             self._save(meta)

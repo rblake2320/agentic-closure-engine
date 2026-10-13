@@ -1,20 +1,169 @@
 """Content-addressed evidence with bounded reads and verified atomic creation."""
 
+import json
 import os
+import sys
 import tempfile
+import threading
+from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 
-from .protocol import MAX_BYTES, ClosureError, digest
+from .protocol import MAX_BYTES, ClosureError, canonical, digest, strict_loads
 
 
 class EvidenceStore:
-    def __init__(self, root, *, create=True):
+    def __init__(self, root, *, create=True, replay_cache_entries=8192, replay_cache_bytes=64 * 1024 * 1024):
         self.root = Path(root).resolve()
         if create:
             self.root.mkdir(parents=True, exist_ok=True)
         elif not self.root.is_dir():
             # Verification reads existing custody; a mistyped path must not become an empty store.
             raise ClosureError("EVIDENCE_STORE_MISSING", str(self.root))
+        if (
+            type(replay_cache_entries) is not int
+            or not 0 <= replay_cache_entries <= 8192
+            or type(replay_cache_bytes) is not int
+            or not 0 <= replay_cache_bytes <= 64 * 1024 * 1024
+        ):
+            raise ClosureError("REPLAY_CACHE_LIMIT_INVALID")
+        self._replay_cache_limit = replay_cache_entries
+        self._replay_cache_budget = replay_cache_bytes
+        self._replay_cache = OrderedDict()
+        self._replay_cache_size = 0
+        self._replay_cache_lock = threading.Lock()
+        self._read_traces = threading.local()
+
+    @contextmanager
+    def trace_reads(self):
+        """Capture actual successful semantic reads, including nested replay cache reads.
+
+        Failed optional reads disable prefix retention too. This trace is thread-local;
+        no caller replaces the store or can supply an asserted dependency manifest.
+        """
+        trace = {"references": set(), "failed": False}
+        traces = getattr(self._read_traces, "active", [])
+        self._read_traces.active = [*traces, trace]
+        try:
+            yield trace
+        finally:
+            self._read_traces.active = traces
+
+    def _cached_prefix(self, key):
+        entry = self._memo_get(("prefix", *key))
+        if entry is None:
+            return None
+        references, serialized, _ = entry
+        # This is trusted internally produced, immutable process memory, not a protocol
+        # input. Its bounded aggregate can exceed the per-object wire size limit.
+        return references, json.loads(serialized)
+
+    def _remember_prefix(self, key, references, result):
+        # Serialized immutable state shares the exact same byte/count budget as all
+        # other pools. It is never written to disk or restored from an operator packet.
+        raw = json.dumps(result, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self._memo_remember(("prefix", *key), tuple(sorted(set(references))), raw)
+
+    def _forget_prefix(self, key):
+        with self._replay_cache_lock:
+            entry = self._replay_cache.pop(("prefix", *key), None)
+            if entry is not None:
+                self._replay_cache_size -= entry[2]
+
+    def replay_cache_info(self):
+        """Bounded process-local diagnostic counters; never an authority or persisted status."""
+        with self._replay_cache_lock:
+            entries = [entry for key, entry in self._replay_cache.items() if key[0] == "replay"]
+            return {"entries": len(entries), "bytes": sum(entry[2] for entry in entries)}
+
+    def verification_cache_info(self):
+        """All three validation pools share one count/byte budget, never three independent caps."""
+        with self._replay_cache_lock:
+            pools = {}
+            for key in self._replay_cache:
+                pools[key[0]] = pools.get(key[0], 0) + 1
+            return {"entries": len(self._replay_cache), "bytes": self._replay_cache_size, "pools": pools}
+
+    def _memo_get(self, key):
+        with self._replay_cache_lock:
+            entry = self._replay_cache.get(key)
+            if entry is not None:
+                self._replay_cache.move_to_end(key)
+            return entry
+
+    def cached_replay(self, key):
+        """Reuse only a prior reconstructed result whose exact custody bytes still exist.
+
+        Every hit reopens and SHA-verifies EVERY consumed object, including inputs/evaluator.
+        No mtime/size shortcut. A changed/deleted object raises rather than falling back to a
+        stale success. The stored entry remains a previous success, never a cached failure.
+        """
+        entry = self._memo_get(("replay", *key))
+        if entry is None:
+            return None
+        references, serialized, _ = entry
+        for reference in references:
+            raw = self.get(reference)
+            if digest(raw) != reference:
+                raise ClosureError("EVIDENCE_HASH_MISMATCH")
+        # The caller receives an independent result; mutations cannot poison later hits.
+        return strict_loads(serialized)
+
+    def remember_replay(self, key, references, result):
+        """Called only after full successful reconstruction; nothing is loaded from disk."""
+        self._memo_remember(("replay", *key), tuple(sorted(set(references))), canonical(result))
+
+    def authentication_cached(self, namespace, key, physical_blobs):
+        """Prior authentication of exact fixed bytes, not acceptance of current state.
+
+        Ledger reads the bytes again and hashes them before this lookup. Stored SQL hash
+        columns and filesystem metadata are never used to select an authenticated body.
+        """
+        entry = self._memo_get(("auth/" + namespace, *key))
+        return entry is not None and entry[1] == tuple(physical_blobs)
+
+    def remember_authentication(self, namespace, key, fixed_blobs):
+        blobs = tuple(fixed_blobs)
+        if any(not isinstance(blob, bytes) for blob in blobs):
+            raise ClosureError("AUTHENTICATION_CACHE_BYTES_REQUIRED")
+        self._memo_remember(("auth/" + namespace, *key), (), blobs)
+
+    def authenticate_envelope(self, envelope, purpose, trust, source_epoch):
+        """Authenticate exact newly canonicalized signed bytes, never state or eligibility."""
+        from .crypto import verify
+
+        raw = canonical(envelope)
+        key = (purpose, digest(raw), trust.hash, source_epoch)
+        if not self.authentication_cached("event", key, (raw,)):
+            verify(envelope, purpose, trust)
+            self.remember_authentication("event", key, (raw,))
+        # Independent copy tied to the canonical bytes, not a caller-owned mutable body.
+        return strict_loads(raw)["payload"]["body"]
+
+    def _memo_remember(self, key, references, payload):
+        payload_size = sys.getsizeof(payload)
+        if isinstance(payload, tuple):
+            payload_size += sum(sys.getsizeof(item) for item in payload)
+        weight = (
+            sys.getsizeof(key)
+            + sum(sys.getsizeof(item) for item in key)
+            + sys.getsizeof(references)
+            + sum(sys.getsizeof(item) for item in references)
+            + payload_size
+            + 256  # entry/LRU bookkeeping, conservatively counted
+        )
+        if not self._replay_cache_limit or weight > self._replay_cache_budget:
+            return
+        with self._replay_cache_lock:
+            if key in self._replay_cache:
+                self._replay_cache_size -= self._replay_cache.pop(key)[2]
+            while self._replay_cache and (
+                len(self._replay_cache) >= self._replay_cache_limit
+                or self._replay_cache_size + weight > self._replay_cache_budget
+            ):
+                self._replay_cache_size -= self._replay_cache.popitem(last=False)[1][2]
+            self._replay_cache[key] = (references, payload, weight)
+            self._replay_cache_size += weight
 
     def path_for(self, evidence_hash):
         if (
@@ -55,10 +204,32 @@ class EvidenceStore:
         return evidence_hash
 
     def get(self, evidence_hash):
+        try:
+            raw = self._physical_get(evidence_hash)
+        except Exception:
+            for trace in getattr(self._read_traces, "active", []):
+                trace["failed"] = True
+            raise
+        for trace in getattr(self._read_traces, "active", []):
+            trace["references"].add(evidence_hash)
+        return raw
+
+    def _physical_get(self, evidence_hash):
         path = self.path_for(evidence_hash)
         try:
             with path.open("rb") as stream:
-                raw = stream.read(MAX_BYTES + 1)
+                # A MAX+1 read allocates a megabyte even for tiny observations on some
+                # Python/Windows combinations. Read the complete object in bounded
+                # chunks; never infer content from stat/mtime or accept a partial prefix.
+                chunks, total = [], 0
+                while total <= MAX_BYTES:
+                    limit = min(4096 if not chunks else 65536, MAX_BYTES + 1 - total)
+                    chunk = stream.read(limit)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                raw = b"".join(chunks)
         except FileNotFoundError as exc:
             raise ClosureError("EVIDENCE_MISSING") from exc
         except OSError as exc:

@@ -53,7 +53,10 @@ def main():
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=900 if label == "installed-tests" else 300,
+                # The installed suite includes real observation/recovery windows and
+                # TLS witness processes. The former900s bound expired after >95%
+                # of528 cases; this bounds the harness, not any closure contract.
+                timeout=1800 if label == "installed-tests" else 300,
             )
         except subprocess.TimeoutExpired as exc:
 

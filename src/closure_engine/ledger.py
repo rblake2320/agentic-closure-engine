@@ -1,7 +1,12 @@
 """Signed event replay, SQLite atomic append and independent checkpoint verification."""
 
+import json
 import sqlite3
+import sys
+import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
+from importlib.resources import files
 from pathlib import Path
 
 from .contracts import FrozenContract, freeze
@@ -9,6 +14,31 @@ from .crypto import sign, verify
 from .protocol import GENESIS, ClosureError, canonical, digest, milliseconds, strict_loads
 from .recovery import recovery_status
 from .verdicts import replay_packet
+
+_AUTH_SOURCE_EPOCH = digest(
+    canonical(
+        {
+            name: digest(files("closure_engine").joinpath(name).read_bytes())
+            for name in ("ledger.py", "contracts.py", "crypto.py", "protocol.py")
+        }
+    )
+)
+_PREFIX_SOURCE_EPOCH = digest(
+    canonical(
+        {
+            name: digest(files("closure_engine").joinpath(name).read_bytes())
+            for name in (
+                "ledger.py",
+                "store.py",
+                "verdicts.py",
+                "contracts.py",
+                "crypto.py",
+                "protocol.py",
+                "recovery.py",
+            )
+        }
+    )
+)
 
 VERDICTS = {"PROVEN", "DISPROVEN", "PARTIALLY_PROVEN", "INDETERMINATE"}
 ROLES = {
@@ -42,11 +72,16 @@ ACTIVE = {"FROZEN", "BASELINED", "EXECUTING", "VERIFYING", "OBSERVING"}
 
 
 class Ledger:
-    def __init__(self, path, trust, store, checkpoint=None):
+    def __init__(self, path, trust, store, checkpoint=None, *, _require_evaluator_custody=False):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.trust = trust
         self.store = store
+        # The operating Runtime retains owner-approved evaluator bundles. Offline v1
+        # may reference an externally installed evaluator; preserve that legacy protocol.
+        # Custody enables this private policy unconditionally, never from caller input.
+        self._require_evaluator_custody = _require_evaluator_custody
+        self._prefix_owner = str(uuid.uuid4())
         self.anchor = checkpoint
         if self.path.exists() and checkpoint is None:
             raise ClosureError("CHECKPOINT_REQUIRED_FOR_REOPEN")
@@ -104,22 +139,70 @@ class Ledger:
             db.execute("COMMIT")
 
     def _contracts(self, db):
-        contracts = {}
+        contracts, parsed = {}, {}
         for tx, raw, approval in db.execute("SELECT transaction_id,contract,approval FROM contracts"):
             frozen = FrozenContract(raw, approval)
-            freeze(frozen.data, frozen.approval, self.trust)
-            if frozen.data["transaction_id"] != tx:
+            key = (digest(raw), digest(approval), self.trust.hash, _AUTH_SOURCE_EPOCH)
+            cached = getattr(self.store, "authentication_cached", None)
+            if cached is None or not cached("contract", key, (raw, approval)):
+                data = frozen.data
+                freeze(data, frozen.approval, self.trust)
+                remember = getattr(self.store, "remember_authentication", None)
+                if remember is not None:
+                    remember("contract", key, (raw, approval))
+            else:
+                # These exact physically reread bytes already passed strict parsing,
+                # schema and approval authentication under this source/trust epoch.
+                # Parse a new dict once for this invocation, never retain eligibility.
+                data = json.loads(raw)
+            if data["transaction_id"] != tx:
                 raise ClosureError("CONTRACT_STORAGE_MISMATCH")
             contracts[tx] = frozen
-        return contracts
+            parsed[tx] = data
+        return contracts, parsed
 
-    def _apply(self, envelope, states, packets, bindings, contracts, input_sets):
-        b = verify(envelope, "ledger-event", self.trust)
+    def _authenticated_row(self, raw):
+        """Authenticate physically read canonical bytes; never memoize states or chain position."""
+        envelope = strict_loads(raw)
+        key = (digest(raw), self.trust.hash, _AUTH_SOURCE_EPOCH)
+        cached = getattr(self.store, "authentication_cached", None)
+        if cached is None or not cached("event", key, (raw,)):
+            verify(envelope, "ledger-event", self.trust)
+            if canonical(envelope) != raw:
+                raise ClosureError("LEDGER_INTEGRITY_FAILURE")
+            remember = getattr(self.store, "remember_authentication", None)
+            if remember is not None:
+                remember("event", key, (raw,))
+        return envelope
+
+    def _fixed_envelope(self, envelope, purpose):
+        authenticate = getattr(self.store, "authenticate_envelope", None)
+        return (
+            verify(envelope, purpose, self.trust)
+            if authenticate is None
+            else authenticate(envelope, purpose, self.trust, _AUTH_SOURCE_EPOCH)
+        )
+
+    def _apply(
+        self,
+        envelope,
+        states,
+        packets,
+        bindings,
+        contracts,
+        input_sets,
+        *,
+        _authenticated=False,
+        _parse_context=None,
+    ):
+        # Only the private physically read/canonical/authenticated row path sets this flag;
+        # append/RPC/scoped replays cannot supply a caller-controlled preverified body.
+        b = envelope["payload"]["body"] if _authenticated else verify(envelope, "ledger-event", self.trust)
         tx = b["transaction_id"]
         if tx not in contracts or b["contract_hash"] != contracts[tx].hash:
             raise ClosureError("EVENT_CONTRACT_MISMATCH")
         frozen = contracts[tx]
-        c = frozen.data
+        c = frozen.data if _parse_context is None else _parse_context["contracts"][tx]
         state, old = b["state"], states.get(tx)
         role = self.trust.record(envelope["payload"]["key_id"])["role"]
         if role not in ROLES[state]:
@@ -132,8 +215,32 @@ class Ledger:
             p = replay_packet(b["packet"], self.store, self.trust)
             if tx in bindings and p["binding_hash"] != digest(bindings[tx]):
                 raise ClosureError("VERDICT_ARTIFACT_BINDING_MISMATCH")
-            manifest = strict_loads(self.store.get(p["inputs_hash"]))
-            current = {digest(value) for value in manifest["records"] + manifest["receipts"]}
+            raw_inputs = self.store.get(p["inputs_hash"])
+            if digest(raw_inputs) != p["inputs_hash"]:
+                raise ClosureError("EVIDENCE_HASH_MISMATCH")
+            memo = None if _parse_context is None else _parse_context["inputs"].get(p["inputs_hash"])
+            if memo is not None and memo[0] == raw_inputs:
+                current = memo[1]
+            else:
+                manifest = strict_loads(raw_inputs)
+                current = frozenset(digest(value) for value in manifest["records"] + manifest["receipts"])
+                parse_weight = (
+                    sys.getsizeof(raw_inputs)
+                    + sys.getsizeof(current)
+                    + sum(sys.getsizeof(value) for value in current)
+                    + 256
+                )
+                if _parse_context is not None and parse_weight <= 8 * 1024 * 1024:
+                    # Ephemeral parse/digest facts only, scoped to THIS full replay. Fresh
+                    # physical custody read and SHA verification above are never skipped.
+                    while _parse_context["inputs"] and (
+                        len(_parse_context["inputs"]) >= 128
+                        or _parse_context["bytes"] + parse_weight > 8 * 1024 * 1024
+                    ):
+                        _, old_inputs = _parse_context["inputs"].popitem(last=False)
+                        _parse_context["bytes"] -= old_inputs[2]
+                    _parse_context["inputs"][p["inputs_hash"]] = (raw_inputs, current, parse_weight)
+                    _parse_context["bytes"] += parse_weight
             prior = input_sets.get(tx, {"records": set(), "evaluated_at": -1})
             if not prior["records"] <= current:
                 raise ClosureError("LEDGERED_EVIDENCE_OMITTED")
@@ -210,7 +317,7 @@ class Ledger:
         if state == "EXECUTING":
             if b["binding"] is None:
                 raise ClosureError("RUN_BINDING_REQUIRED")
-            binding = verify(b["binding"], "run-binding", self.trust)
+            binding = self._fixed_envelope(b["binding"], "run-binding")
             if any(
                 binding[k] != v
                 for k, v in {
@@ -225,7 +332,7 @@ class Ledger:
         if state == "VERIFYING":
             if b["receipt"] is None:
                 raise ClosureError("ACTION_RECEIPT_REQUIRED")
-            receipt = verify(b["receipt"], "action-receipt", self.trust)
+            receipt = self._fixed_envelope(b["receipt"], "action-receipt")
             binding = bindings[tx]["payload"]["body"]
             if any(
                 receipt[k] != binding[k]
@@ -268,12 +375,18 @@ class Ledger:
             self.store.get(ref)
         states[tx] = state
 
-    def _verify(self, db, checkpoint=None, additional_checkpoints=()):
+    def _verify(self, db, checkpoint=None, additional_checkpoints=(), *, force_full=False):
         stored_trust = db.execute("SELECT value FROM meta WHERE key='trust_hash'").fetchone()
         if stored_trust is None or stored_trust[0] != self.trust.hash:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
-        contracts = self._contracts(db)
+        contracts, contract_data = self._contracts(db)
+        evaluator_references = set()
+        if self._require_evaluator_custody:
+            for data in contract_data.values():
+                reference = data["evaluator_hash"]
+                self.store.get(reference)  # fresh physical SHA validation even on cold reopen
+                evaluator_references.add(reference)
         cursor = db.execute("SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence")
         try:
             rows = cursor.fetchall()
@@ -281,20 +394,124 @@ class Ledger:
             # A failed replay traceback must not retain a live cursor and mask its typed
             # integrity error with Windows WinError 32 during verification-directory cleanup.
             cursor.close()
-        return self._replay_rows(rows, contracts, checkpoint, additional_checkpoints)
+        # Every SQL row is physically reread and freshly hashed, including rows in an
+        # authenticated prefix. SQL hash columns, file metadata and signed checkpoints
+        # alone cannot select a reusable semantic state.
+        fingerprints = [[seq, event_id, digest(raw), stored] for seq, event_id, raw, stored in rows]
+        contract_fingerprints = {
+            tx: [digest(frozen.raw), digest(frozen.approval_raw)] for tx, frozen in contracts.items()
+        }
+        key = (
+            str(self.path),
+            self._prefix_owner,
+            self.trust.hash,
+            _PREFIX_SOURCE_EPOCH,
+            self._require_evaluator_custody,
+        )
+        cached = getattr(self.store, "_cached_prefix", None)
+        tracing = getattr(self.store, "trace_reads", None)
+        prefix, references = None, ()
+        entry = None if force_full or cached is None else cached(key)
+        if entry is not None:
+            references, candidate = entry
+            old_rows = candidate["rows"]
+            compatible = (
+                len(old_rows) <= len(fingerprints)
+                and fingerprints[: len(old_rows)] == old_rows
+                and all(
+                    contract_fingerprints.get(tx) == value for tx, value in candidate["contracts"].items()
+                )
+            )
+            if compatible:
+                try:
+                    for reference in references:
+                        # Actual fresh get+SHA for EVERY transitive consumed reference.
+                        self.store.get(reference)
+                except ClosureError:
+                    compatible = False
+            if compatible:
+                prefix = candidate
+            else:
+                self.store._forget_prefix(key)
+                references = ()
+        if tracing is None:
+            return self._replay_rows(
+                rows, contracts, checkpoint, additional_checkpoints, _contract_data=contract_data
+            )
+        with tracing() as trace:
+            result = self._replay_rows(
+                rows,
+                contracts,
+                checkpoint,
+                additional_checkpoints,
+                _prefix=prefix,
+                _contract_data=contract_data,
+            )
+        if not trace["failed"]:
+            head, seq, states, packets, bindings, _, inputs, last_time = result
+            retained = {
+                "rows": fingerprints,
+                "contracts": contract_fingerprints,
+                "head": head,
+                "sequence": seq,
+                "states": states,
+                "packets": packets,
+                "bindings": bindings,
+                "last_event_time": last_time,
+                "input_sets": {
+                    tx: {"records": sorted(value["records"]), "evaluated_at": value["evaluated_at"]}
+                    for tx, value in inputs.items()
+                },
+            }
+            self.store._remember_prefix(
+                key, set(references) | trace["references"] | evaluator_references, retained
+            )
+        return result
 
-    def _replay_rows(self, rows, contracts, checkpoint, additional_checkpoints=(), *, scope=None):
+    def _replay_rows(
+        self,
+        rows,
+        contracts,
+        checkpoint,
+        additional_checkpoints=(),
+        *,
+        scope=None,
+        _prefix=None,
+        _contract_data=None,
+    ):
         """Shared signature/chain/time checks; scoped proofs evaluate only their declared subjects.
 
         Foreign event envelopes still authenticate the global chain. Their artifact/evidence
         semantics are deliberately not evaluated or represented as verified transaction states.
         """
         states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
+        parse_context = {
+            "contracts": (
+                {tx: value.data for tx, value in contracts.items()}
+                if _contract_data is None
+                else _contract_data
+            ),
+            "inputs": OrderedDict(),
+            "bytes": 0,
+        }
         head, seq, last_event_time = GENESIS, 0, None
         seen_event_ids = set()
-        for row_seq, event_id, raw, stored_hash in rows:
-            envelope = strict_loads(raw)
-            b = verify(envelope, "ledger-event", self.trust)
+        start = 0
+        if _prefix is not None:
+            # This private seed only comes from _verify after physical prefix and custody
+            # validation. Public scoped replay/import cannot submit a preverified seed.
+            states, packets, bindings = _prefix["states"], _prefix["packets"], _prefix["bindings"]
+            input_sets = {
+                tx: {"records": frozenset(value["records"]), "evaluated_at": value["evaluated_at"]}
+                for tx, value in _prefix["input_sets"].items()
+            }
+            head, seq, last_event_time = _prefix["head"], _prefix["sequence"], _prefix["last_event_time"]
+            start = len(_prefix["rows"])
+            history = {row[0]: row[3] for row in _prefix["rows"]}
+            seen_event_ids = {row[1] for row in _prefix["rows"]}
+        for row_seq, event_id, raw, stored_hash in rows[start:]:
+            envelope = self._authenticated_row(raw)
+            b = envelope["payload"]["body"]
             event_time = milliseconds(envelope["payload"]["created_at"])
             if last_event_time is not None and event_time < last_event_time:
                 raise ClosureError("EVENT_TIME_REGRESSION")
@@ -303,14 +520,22 @@ class Ledger:
                 or b["sequence"] != row_seq
                 or b["previous_hash"] != head
                 or b["event_id"] != event_id
-                or digest(envelope) != stored_hash
-                or canonical(envelope) != raw
+                or digest(raw) != stored_hash
                 or event_id in seen_event_ids
             ):
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
             seen_event_ids.add(event_id)
             if scope is None or b["transaction_id"] in scope:
-                self._apply(envelope, states, packets, bindings, contracts, input_sets)
+                self._apply(
+                    envelope,
+                    states,
+                    packets,
+                    bindings,
+                    contracts,
+                    input_sets,
+                    _authenticated=True,
+                    _parse_context=parse_context,
+                )
             elif self.trust.record(envelope["payload"]["key_id"])["role"] not in ROLES[b["state"]]:
                 raise ClosureError("STATE_AUTHORITY_DENIED")
             head, seq = stored_hash, row_seq
@@ -416,11 +641,12 @@ class Ledger:
 
     def verify(self, checkpoint=None):
         with self._db() as db:
-            return self._verify(db, checkpoint)[0]
+            return self._verify(db, checkpoint, force_full=True)[0]
 
     @property
     def head(self):
-        return self.verify()
+        with self._db() as db:
+            return self._verify(db)[0]
 
     @property
     def sequence(self):
@@ -453,7 +679,7 @@ class Ledger:
         ):
             raise ClosureError("INVALID_EXPORT_RANGE")
         with self._db() as db:
-            head, sequence = self._verify(db)[:2]
+            head, sequence = self._verify(db, force_full=True)[:2]
             contracts = [
                 {"contract": strict_loads(raw), "approval": strict_loads(approval)}
                 for raw, approval in db.execute(
@@ -490,7 +716,7 @@ class Ledger:
     def summary(self, checkpoint=None):
         """Verified head, sequence and every transaction state from one storage snapshot."""
         with self._db() as db:
-            result = self._verify(db, checkpoint)
+            result = self._verify(db, checkpoint, force_full=True)
         return {"verified_head": result[0], "sequence": result[1], "transactions": dict(result[2])}
 
     def state(self, transaction_id):

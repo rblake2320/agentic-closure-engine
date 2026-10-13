@@ -81,6 +81,8 @@ class _CustodyHandler(ServiceHandler):
                 return custody.listing()
             if path == "/custody/v1/evidence" and "hash" in query:
                 return custody.evidence_get(query["hash"])
+            if path == "/custody/v1/witness-record" and "hash" in query:
+                return custody.witness_record(query["hash"])
             if path == "/custody/v1/audit-export":
                 try:
                     start = int(query.get("from", "1"))
@@ -116,10 +118,17 @@ class _CustodyHandler(ServiceHandler):
         with self.server.write_lock:
             if path == "/custody/v1/transactions":
                 self._need(roles, {"actor"})
-                return custody.create_tx(body.get("proposal"), body.get("parent_transaction"))
+                return custody.create_tx(
+                    body.get("proposal"), body.get("parent_transaction"), proposed_by=body.get("proposed_by")
+                )
             if path == "/custody/v1/approval":
                 self._need(roles, {"owner"})
-                return custody.set_approval(body["transaction_id"], body["approval"])
+                return custody.set_approval(
+                    body["transaction_id"],
+                    body["approval"],
+                    approved_by=body.get("approved_by"),
+                    require_independent=body.get("require_independent", False) is True,
+                )
             if path == "/custody/v1/binding":
                 self._need(roles, {"authority"})
                 return custody.set_binding(body["transaction_id"], body["binding"])
@@ -180,6 +189,11 @@ class RemoteCustody:
         value = self.client.call("GET", "/custody/v1/position")
         return value["head"], value["sequence"]
 
+    def witness_record(self, event_hash):
+        from urllib.parse import quote
+
+        return self.client.call("GET", "/custody/v1/witness-record?hash=" + quote(event_hash, safe=""))
+
     def summary(self):
         return self.client.call("GET", "/custody/v1/summary")
 
@@ -218,15 +232,24 @@ class RemoteCustody:
     def evidence_get(self, evidence_hash):
         return self.store.get(evidence_hash)
 
-    def create_tx(self, proposal, parent_transaction=None):
+    def create_tx(self, proposal, parent_transaction=None, *, proposed_by=None):
         return self.client.call(
             "POST",
             "/custody/v1/transactions",
-            {"proposal": proposal, "parent_transaction": parent_transaction},
+            {"proposal": proposal, "parent_transaction": parent_transaction, "proposed_by": proposed_by},
         )
 
-    def set_approval(self, tx, approval):
-        return self.client.call("POST", "/custody/v1/approval", {"transaction_id": tx, "approval": approval})
+    def set_approval(self, tx, approval, *, approved_by=None, require_independent=False):
+        return self.client.call(
+            "POST",
+            "/custody/v1/approval",
+            {
+                "transaction_id": tx,
+                "approval": approval,
+                "approved_by": approved_by,
+                "require_independent": require_independent,
+            },
+        )
 
     def set_binding(self, tx, binding):
         return self.client.call("POST", "/custody/v1/binding", {"transaction_id": tx, "binding": binding})

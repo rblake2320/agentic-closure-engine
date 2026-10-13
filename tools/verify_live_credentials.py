@@ -127,6 +127,31 @@ def main():
         request(first_token, expected=401)
         assert request(second_token)["state"] == "ACCEPTED"
         if args.restart:
+
+            def start_time():
+                return subprocess.check_output(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        "{{.State.StartedAt}}",
+                        "agentic-closure-engine-gateway-1",
+                    ],
+                    text=True,
+                    timeout=15,
+                ).strip()
+
+            before_start = start_time()
+            stopped = subprocess.run(
+                ["powershell", "-NoProfile", "-File", "tools/stop-product.ps1"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert stopped.returncode == 0, {
+                "exit": stopped.returncode,
+                "error": stopped.stderr[-1000:],
+            }
             restarted = subprocess.run(
                 ["powershell", "-NoProfile", "-File", "tools/start-product.ps1"],
                 capture_output=True,
@@ -137,7 +162,16 @@ def main():
                 "exit": restarted.returncode,
                 "error": restarted.stderr[-1000:],
             }
-            observations.append({"command": "start-product.ps1", "exit": 0})
+            after_start = start_time()
+            assert after_start != before_start, "Gateway process did not restart"
+            observations.append(
+                {
+                    "command": "stop/start-product.ps1",
+                    "exit": 0,
+                    "before_started_at": before_start,
+                    "after_started_at": after_start,
+                }
+            )
             request(first_token, expected=401)
             assert request(second_token)["state"] == "ACCEPTED"
         revoke(second["token_sha256"])
