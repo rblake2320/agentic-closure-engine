@@ -18,7 +18,7 @@ from test_runtime_e2e import artifact, run_to_verdict, world  # noqa: F401 - rea
 
 from closure_engine.crypto import TrustStore, sign
 from closure_engine.ledger import Ledger
-from closure_engine.protocol import GENESIS, ClosureError, canonical, digest, timestamp
+from closure_engine.protocol import GENESIS, MAX_BYTES, ClosureError, canonical, digest, timestamp
 from closure_engine.runtime import Runtime
 from closure_engine.store import EvidenceStore
 from closure_engine.verdicts import close_run, replay_packet
@@ -181,6 +181,29 @@ def test_cache_count_budget_and_root_ownership_are_bounded(run, tmp_path):
     limited = EvidenceStore(tmp_path / "limited", replay_cache_entries=10, replay_cache_bytes=1)
     limited.remember_replay(("entry",), [], {"large": "x" * 1000})
     assert limited.replay_cache_info() == {"entries": 0, "bytes": 0}
+
+
+@pytest.mark.parametrize("size", (0, 1, 4095, 4096, 65536, MAX_BYTES - 1, MAX_BYTES))
+def test_physical_read_preserves_entire_real_object_at_size_boundaries(tmp_path, size):
+    store = EvidenceStore(tmp_path / "physical")
+    raw = (bytes(range(256)) * ((size + 255) // 256))[:size]
+    reference = store.put(raw)
+    assert store.get(reference) == raw
+    if size:
+        store.path_for(reference).write_bytes(raw[:-1])  # actual truncated physical file
+        with pytest.raises(ClosureError, match="EVIDENCE_HASH_MISMATCH"):
+            store.get(reference)
+
+
+def test_physical_read_refuses_actual_oversize_file_without_accepting_prefix(tmp_path):
+    store = EvidenceStore(tmp_path / "oversize")
+    raw = b"x" * (MAX_BYTES + 1024)
+    with pytest.raises(ClosureError, match="INPUT_TOO_LARGE"):
+        store.put(raw)
+    reference = digest(raw)
+    store.path_for(reference).write_bytes(raw)  # hostile storage admission, real file
+    with pytest.raises(ClosureError, match="EVIDENCE_HASH_MISMATCH"):
+        store.get(reference)
 
 
 def test_reopen_has_no_memoized_success_and_missing_raw_inputs_still_refuse(run):

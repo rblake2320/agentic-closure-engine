@@ -218,7 +218,18 @@ class EvidenceStore:
         path = self.path_for(evidence_hash)
         try:
             with path.open("rb") as stream:
-                raw = stream.read(MAX_BYTES + 1)
+                # A MAX+1 read allocates a megabyte even for tiny observations on some
+                # Python/Windows combinations. Read the complete object in bounded
+                # chunks; never infer content from stat/mtime or accept a partial prefix.
+                chunks, total = [], 0
+                while total <= MAX_BYTES:
+                    limit = min(4096 if not chunks else 65536, MAX_BYTES + 1 - total)
+                    chunk = stream.read(limit)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                raw = b"".join(chunks)
         except FileNotFoundError as exc:
             raise ClosureError("EVIDENCE_MISSING") from exc
         except OSError as exc:

@@ -1,5 +1,6 @@
 """Signed event replay, SQLite atomic append and independent checkpoint verification."""
 
+import json
 import sqlite3
 import sys
 import uuid
@@ -138,20 +139,27 @@ class Ledger:
             db.execute("COMMIT")
 
     def _contracts(self, db):
-        contracts = {}
+        contracts, parsed = {}, {}
         for tx, raw, approval in db.execute("SELECT transaction_id,contract,approval FROM contracts"):
             frozen = FrozenContract(raw, approval)
             key = (digest(raw), digest(approval), self.trust.hash, _AUTH_SOURCE_EPOCH)
             cached = getattr(self.store, "authentication_cached", None)
             if cached is None or not cached("contract", key, (raw, approval)):
-                freeze(frozen.data, frozen.approval, self.trust)
+                data = frozen.data
+                freeze(data, frozen.approval, self.trust)
                 remember = getattr(self.store, "remember_authentication", None)
                 if remember is not None:
                     remember("contract", key, (raw, approval))
-            if frozen.data["transaction_id"] != tx:
+            else:
+                # These exact physically reread bytes already passed strict parsing,
+                # schema and approval authentication under this source/trust epoch.
+                # Parse a new dict once for this invocation, never retain eligibility.
+                data = json.loads(raw)
+            if data["transaction_id"] != tx:
                 raise ClosureError("CONTRACT_STORAGE_MISMATCH")
             contracts[tx] = frozen
-        return contracts
+            parsed[tx] = data
+        return contracts, parsed
 
     def _authenticated_row(self, raw):
         """Authenticate physically read canonical bytes; never memoize states or chain position."""
@@ -372,11 +380,11 @@ class Ledger:
         if stored_trust is None or stored_trust[0] != self.trust.hash:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
-        contracts = self._contracts(db)
+        contracts, contract_data = self._contracts(db)
         evaluator_references = set()
         if self._require_evaluator_custody:
-            for frozen in contracts.values():
-                reference = frozen.data["evaluator_hash"]
+            for data in contract_data.values():
+                reference = data["evaluator_hash"]
                 self.store.get(reference)  # fresh physical SHA validation even on cold reopen
                 evaluator_references.add(reference)
         cursor = db.execute("SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence")
@@ -427,9 +435,18 @@ class Ledger:
                 self.store._forget_prefix(key)
                 references = ()
         if tracing is None:
-            return self._replay_rows(rows, contracts, checkpoint, additional_checkpoints)
+            return self._replay_rows(
+                rows, contracts, checkpoint, additional_checkpoints, _contract_data=contract_data
+            )
         with tracing() as trace:
-            result = self._replay_rows(rows, contracts, checkpoint, additional_checkpoints, _prefix=prefix)
+            result = self._replay_rows(
+                rows,
+                contracts,
+                checkpoint,
+                additional_checkpoints,
+                _prefix=prefix,
+                _contract_data=contract_data,
+            )
         if not trace["failed"]:
             head, seq, states, packets, bindings, _, inputs, last_time = result
             retained = {
@@ -452,7 +469,15 @@ class Ledger:
         return result
 
     def _replay_rows(
-        self, rows, contracts, checkpoint, additional_checkpoints=(), *, scope=None, _prefix=None
+        self,
+        rows,
+        contracts,
+        checkpoint,
+        additional_checkpoints=(),
+        *,
+        scope=None,
+        _prefix=None,
+        _contract_data=None,
     ):
         """Shared signature/chain/time checks; scoped proofs evaluate only their declared subjects.
 
@@ -461,7 +486,11 @@ class Ledger:
         """
         states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
         parse_context = {
-            "contracts": {tx: value.data for tx, value in contracts.items()},
+            "contracts": (
+                {tx: value.data for tx, value in contracts.items()}
+                if _contract_data is None
+                else _contract_data
+            ),
             "inputs": OrderedDict(),
             "bytes": 0,
         }
