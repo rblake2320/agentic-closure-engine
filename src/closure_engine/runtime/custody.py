@@ -216,6 +216,13 @@ class LocalCustody:
             }
 
     # ----- evidence ------------------------------------------------------------------------
+    def witness_record(self, event_hash):
+        """Read-only authenticated public temporal sidecar for an admitted event."""
+        from .witness_gate import witness_record
+
+        with self._lock:
+            return witness_record(self, event_hash)
+
     def evidence_get(self, evidence_hash):
         return self.store.get(evidence_hash)
 

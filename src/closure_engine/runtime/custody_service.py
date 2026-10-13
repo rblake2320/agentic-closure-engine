@@ -81,6 +81,8 @@ class _CustodyHandler(ServiceHandler):
                 return custody.listing()
             if path == "/custody/v1/evidence" and "hash" in query:
                 return custody.evidence_get(query["hash"])
+            if path == "/custody/v1/witness-record" and "hash" in query:
+                return custody.witness_record(query["hash"])
             if path == "/custody/v1/audit-export":
                 try:
                     start = int(query.get("from", "1"))
@@ -186,6 +188,11 @@ class RemoteCustody:
     def position(self):
         value = self.client.call("GET", "/custody/v1/position")
         return value["head"], value["sequence"]
+
+    def witness_record(self, event_hash):
+        from urllib.parse import quote
+
+        return self.client.call("GET", "/custody/v1/witness-record?hash=" + quote(event_hash, safe=""))
 
     def summary(self):
         return self.client.call("GET", "/custody/v1/summary")

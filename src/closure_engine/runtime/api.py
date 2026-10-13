@@ -70,6 +70,7 @@ STATUS = {
     "CLOSURE_NOT_ADMITTED": 404,
     "EVIDENCE_MISSING": 404,
     "TARGET_UNREACHABLE": 502,
+    "TIME_ASSURANCE_UNAVAILABLE": 409,
     "SERVICE_UNREACHABLE": 502,
 }
 __all__ = ["ROLES", "ApiServer", "check_separation", "load_credentials", "load_credentials_value"]
@@ -286,6 +287,10 @@ class _Handler(ServiceHandler):
             if match:
                 self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.export_bundle(match.group(1))
+            match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/time-assurance", path)
+            if match:
+                self._existing_legacy_subject(runtime, match.group(1))
+                return 200, runtime.time_assurance(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX, path)
             if match:
                 self._existing_legacy_subject(runtime, match.group(1))

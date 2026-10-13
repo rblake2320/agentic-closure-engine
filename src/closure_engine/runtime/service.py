@@ -853,6 +853,11 @@ class Runtime:
 
         return export_bundle(self.custody, tx)
 
+    def time_assurance(self, tx):
+        from ..time_assurance import export_time_assurance
+
+        return export_time_assurance(self.custody, tx)
+
 
 def artifact_bytes(path):
     path = Path(path)
