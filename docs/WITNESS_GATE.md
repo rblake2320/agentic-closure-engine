@@ -60,6 +60,10 @@ permitted two-second skew. A pre-deadline receipt cannot become an after-deadlin
 merely by waiting before consumption. New after-deadline reception is required.
 Immediate independently observed restoration failure remains failure before the deadline;
 an unverified child whose deadline has not elapsed remains recovery-required.
+Child evaluation must itself be observed by the signed witness clock before recovery-status
+evaluation. A future child evaluation inside the allowed clock-skew band is refused as
+`WITNESS_GATE_CHILD_EVALUATION_NOT_OBSERVED`, rather than converted into a false deadline
+failure. This is temporal-input admissibility, not a new recovery evaluator.
 
 Custody writes `witness/pending.json` before calling the witness, binding the exact signed
 event, event digest, expected ledger head, subject, subject purpose, policy digest and fresh

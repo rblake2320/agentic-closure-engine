@@ -413,6 +413,10 @@ class WitnessGate:
         inputs = strict_loads(self.custody.store.get(parent["payload"]["body"]["inputs_hash"]))
         child = None
         if body["packet"] is not None:
+            if milliseconds(body["packet"]["payload"]["body"]["evaluated_at"]) > milliseconds(
+                receipt["received_at"]
+            ):
+                raise ClosureError("WITNESS_GATE_CHILD_EVALUATION_NOT_OBSERVED")
             if body["recovery_contract"] is None or body["recovery_approval"] is None:
                 raise ClosureError("RECOVERY_CONTRACT_REQUIRED")
             child = freeze(body["recovery_contract"], body["recovery_approval"], self.custody.trust)

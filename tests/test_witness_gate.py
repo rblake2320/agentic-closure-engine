@@ -104,11 +104,17 @@ def tls(tmp_path_factory):
 
 
 @pytest.fixture
-def gated(world, tmp_path, tls):  # noqa: F811
+def gated(world, tmp_path, tls, request):  # noqa: F811
     deployment, pin, _ = world
     runtime = Runtime(deployment, pin)
     root = tmp_path / "witness-service"
-    enrolled = initialize(root, "independent-time-signer", runtime.trust, pin)
+    widened = (
+        getattr(request.node, "callspec", None)
+        and request.node.callspec.params.get("phase") == "future-evaluation"
+    )
+    enrolled = initialize(
+        root, "independent-time-signer", runtime.trust, pin, future_tolerance_ms=10000 if widened else 2000
+    )
     witness = Witness(root, enrolled["expected_witness_hash"], pin)
     server = make_server(witness, port=0, certificate=tls / "server.pem", tls_key=tls / "server.key")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -530,7 +536,7 @@ def test_recovery_failure_deadline_must_be_observed_by_witness_clock(gated, phas
         assert runtime.custody.state(tx) == "RECOVERY_REQUIRED"
 
 
-@pytest.mark.parametrize("phase", ["before", "after", "immediate-baseline-drift"])
+@pytest.mark.parametrize("phase", ["before", "after", "immediate-baseline-drift", "future-evaluation"])
 def test_child_recovery_failure_uses_actual_receipt_clock_and_preserves_immediate_failure(gated, phase):
     runtime, witness, _, deployment, _ = gated
     original = deployment.target("shop/api")
@@ -628,6 +634,16 @@ def test_child_recovery_failure_uses_actual_receipt_clock_and_preserves_immediat
         )
         assert (proxy.outage_count > 0) == (phase != "immediate-baseline-drift")
         child = runtime._tx(child_id)
+        if phase == "future-evaluation":
+            from closure_engine.verdicts import replay_packet
+
+            # Genuine UNKNOWN observations and a valid enrolled authority with a wrong evaluation clock.
+            # The wider ten-second operator policy is frozen before enrollment, not a caller clock option.
+            child["verdict_packet"] = runtime._close_packet(child, runtime.clock.now_ms() + 8000)
+            assert (
+                replay_packet(child["verdict_packet"], runtime.store, runtime.trust)["verdict"]
+                == "INDETERMINATE"
+            )
         deadline = milliseconds(parent["payload"]["body"]["evaluated_at"]) + 40000
         submitted, head = event(
             runtime,
@@ -649,17 +665,38 @@ def test_child_recovery_failure_uses_actual_receipt_clock_and_preserves_immediat
             body,
             timestamp(deadline + 1) if phase == "before" else runtime.clock.now(),
         )
-        if phase == "before":
+        if phase in {"before", "future-evaluation"}:
             config = _config(runtime.custody)
             gate = WitnessGate(runtime.custody, config)
             pending = gate._bind(submitted, head)
-            time.sleep(max(0, deadline - runtime.clock.now_ms() - 1000) / 1000)
+            if phase == "before":
+                time.sleep(max(0, deadline - runtime.clock.now_ms() - 1000) / 1000)
             pending["receipt"] = _receipt(config, submitted, pending["nonce"])
             observed = milliseconds(pending["receipt"]["body"]["received_at"])
-            assert 0 < deadline + 1 - observed <= witness.manifest["future_tolerance_ms"]
+            if phase == "before":
+                assert 0 < deadline + 1 - observed <= witness.manifest["future_tolerance_ms"]
+                code = "WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED"
+            else:
+                from closure_engine.contracts import freeze
+                from closure_engine.recovery import recovery_status
+
+                evaluated = milliseconds(child["verdict_packet"]["payload"]["body"]["evaluated_at"])
+                assert 0 < evaluated - observed <= witness.manifest["future_tolerance_ms"]
+                assert observed < deadline
+                native = recovery_status(
+                    parent,
+                    freeze(child["contract"], child["approval"], runtime.trust),
+                    child["verdict_packet"],
+                    runtime.trust,
+                    observed,
+                    40000,
+                    store=runtime.store,
+                )
+                assert native == {"state": "RECOVERY_FAILED", "reason": "RECOVERY_DEADLINE_EXCEEDED"}
+                code = "WITNESS_GATE_CHILD_EVALUATION_NOT_OBSERVED"
             pending["status"] = "RECEIVED"
             replace_json(gate.pending_path, pending)
-            with pytest.raises(ClosureError, match="WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED"):
+            with pytest.raises(ClosureError, match=code):
                 runtime.custody.append(submitted, head)
             assert runtime.custody.state(tx) == "RECOVERY_REQUIRED"
         else:
