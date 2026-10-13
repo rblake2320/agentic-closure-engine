@@ -58,6 +58,12 @@ $("login-form").onsubmit = async (e) => {
     $("token").value = "";
     $("principal").textContent =
       identity.principal + " · " + identity.roles.join(", ");
+    $("approval-mode").textContent =
+      identity.approval_mode === "single-operator-administration"
+        ? "Single-operator administration; human approval is not independent."
+        : identity.approval_mode === "role-scoped"
+          ? "Roles restricted. This session is limited to the roles shown."
+          : "Approval mode unavailable. Review the operator's role delegation.";
     $("propose").hidden = !identity.roles.includes("actor");
     $("login").hidden = true;
     $("console").hidden = false;
@@ -92,8 +98,8 @@ async function refresh() {
     if (items.length && !selected) selected = items[0].transaction_id;
     const pos = $("ledger-position");
     pos.replaceChildren(
-      node("strong", "EVENTS " + summary.sequence),
-      node("span", "HEAD " + summary.verified_head),
+      node("strong", "GLOBAL LEDGER EVENTS " + summary.sequence),
+      node("span", "GLOBAL LEDGER HEAD " + summary.verified_head),
     );
     $("empty").hidden = !!selected;
     $("transaction-detail").hidden = !selected;
@@ -204,6 +210,11 @@ async function renderTransaction() {
     descriptions[verdict] ||
     descriptions[tx.state] ||
     "The authority will evaluate admitted evidence against this frozen contract.";
+  if (tx.deployment?.receipt === "NOT_DEPLOYED") {
+    $("verdict-note").textContent += "\nDeployment did not occur" +
+      (tx.deployment.reason_code ? " · " + tx.deployment.reason_code : "") +
+      (tx.deployment.target_http_status ? " · target HTTP " + tx.deployment.target_http_status : "");
+  }
   if (body) {
     if (body.reason_codes.length)
       $("verdict-note").textContent += "\n" + body.reason_codes.join(" · ");
@@ -247,12 +258,13 @@ async function renderTransaction() {
     INDETERMINATE: [["Prepare recovery", "recover", "actor"]],
     PARTIALLY_PROVEN: [["Prepare recovery", "recover", "actor"]],
     RECOVERY_REQUIRED: [
+      ["Prepare recovery", "recover", "actor"],
       ["Verify recovery result", "recover-complete", "authority"],
     ],
   };
   $("actions").replaceChildren();
   for (const [label, path, role] of routes[tx.state] || []) {
-    if (!identity.roles.includes(role)) continue;
+    if (!identity.roles.includes(role) || !tx.allowed_actions?.includes(path)) continue;
     const b = node("button", label, "secondary");
     b.disabled = busy || (path === "approve" && !contractReviewed);
     b.onclick = () =>
@@ -326,6 +338,8 @@ $("proposal-form").onsubmit = async (e) => {
   button.disabled = true;
   try {
     const v = Object.fromEntries(new FormData(e.target));
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v.transaction_id) || v.transaction_id.includes(".."))
+      throw new Error("Use a transaction ID of at most 128 ASCII letters/digits, dot, underscore or hyphen; no '..' or slash.");
     const file = $("artifact").files[0];
     if (file && v.artifact_text)
       throw new Error("Choose one artifact source: a file or its exact text.");

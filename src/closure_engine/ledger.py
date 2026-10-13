@@ -274,11 +274,25 @@ class Ledger:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
         checkpoint = checkpoint if checkpoint is not None else self.anchor
         contracts = self._contracts(db)
+        cursor = db.execute("SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence")
+        try:
+            rows = cursor.fetchall()
+        finally:
+            # A failed replay traceback must not retain a live cursor and mask its typed
+            # integrity error with Windows WinError 32 during verification-directory cleanup.
+            cursor.close()
+        return self._replay_rows(rows, contracts, checkpoint, additional_checkpoints)
+
+    def _replay_rows(self, rows, contracts, checkpoint, additional_checkpoints=(), *, scope=None):
+        """Shared signature/chain/time checks; scoped proofs evaluate only their declared subjects.
+
+        Foreign event envelopes still authenticate the global chain. Their artifact/evidence
+        semantics are deliberately not evaluated or represented as verified transaction states.
+        """
         states, packets, bindings, history, input_sets = {}, {}, {}, {}, {}
         head, seq, last_event_time = GENESIS, 0, None
-        for row_seq, event_id, raw, stored_hash in db.execute(
-            "SELECT sequence,event_id,envelope,event_hash FROM events ORDER BY sequence"
-        ):
+        seen_event_ids = set()
+        for row_seq, event_id, raw, stored_hash in rows:
             envelope = strict_loads(raw)
             b = verify(envelope, "ledger-event", self.trust)
             event_time = milliseconds(envelope["payload"]["created_at"])
@@ -291,9 +305,14 @@ class Ledger:
                 or b["event_id"] != event_id
                 or digest(envelope) != stored_hash
                 or canonical(envelope) != raw
+                or event_id in seen_event_ids
             ):
                 raise ClosureError("LEDGER_INTEGRITY_FAILURE")
-            self._apply(envelope, states, packets, bindings, contracts, input_sets)
+            seen_event_ids.add(event_id)
+            if scope is None or b["transaction_id"] in scope:
+                self._apply(envelope, states, packets, bindings, contracts, input_sets)
+            elif self.trust.record(envelope["payload"]["key_id"])["role"] not in ROLES[b["state"]]:
+                raise ClosureError("STATE_AUTHORITY_DENIED")
             head, seq = stored_hash, row_seq
             last_event_time = event_time
             history[seq] = head
@@ -303,6 +322,48 @@ class Ledger:
             if cp["trust_hash"] != self.trust.hash or checkpoint_head != cp["head_hash"]:
                 raise ClosureError("CHECKPOINT_MISMATCH_OR_TRUNCATION")
         return head, seq, states, packets, bindings, contracts, input_sets, last_event_time
+
+    def replay_transaction_history(self, contracts, events, checkpoint, scope, *, prior_checkpoint=None):
+        """Read-only scoped replay with authentic global membership and unchanged own obligations.
+
+        Every event signature/hash link and checkpoint is checked. `_apply` reconstructs all
+        declared transactions using their exact retained bytes, including OBSERVING-to-terminal
+        input completeness and recovery. Foreign outcome semantics are NOT_EVALUATED.
+        """
+        scoped_contracts = {}
+        for item in contracts:
+            frozen = freeze(item.data, item.approval, self.trust)
+            transaction = frozen.data["transaction_id"]
+            if transaction in scoped_contracts:
+                raise ClosureError("CONTRACT_ALREADY_REGISTERED")
+            scoped_contracts[transaction] = frozen
+        if not scope or set(scoped_contracts) != set(scope):
+            raise ClosureError("EXPORT_SCOPE_MISMATCH")
+        rows = [
+            (
+                event["payload"]["body"]["sequence"],
+                event["payload"]["body"]["event_id"],
+                canonical(event),
+                digest(event),
+            )
+            for event in events
+        ]
+        result = self._replay_rows(
+            rows,
+            scoped_contracts,
+            checkpoint,
+            () if prior_checkpoint is None else (prior_checkpoint,),
+            scope=set(scope),
+        )
+        anchor = verify(checkpoint, "checkpoint", self.trust)
+        if anchor["sequence"] != result[1] or anchor["head_hash"] != result[0]:
+            raise ClosureError("CHECKPOINT_DOES_NOT_MATCH_EXPORT")
+        return {
+            "verified_head": result[0],
+            "sequence": result[1],
+            "transactions": dict(result[2]),
+            "packets": dict(result[3]),
+        }
 
     def import_history(self, contracts, events, checkpoint, *, prior_checkpoint=None):
         """Atomically reconstruct an EMPTY verifier ledger and validate its entire history once.

@@ -1,6 +1,6 @@
 services:
   backup:
-    image: agentic-closure-engine:0.3.0
+    image: agentic-closure-engine:0.3.1
     user: '0:0'
     read_only: true
     cap_drop: [ALL]

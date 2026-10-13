@@ -80,14 +80,14 @@ def main():
         )
         return result
 
-    wrong = run(base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash, "0" * 64])
+    wrong = run(base + ["agentic-closure-engine:0.3.1", "restore", args.trust_hash, "0" * 64])
     assert wrong.returncode == 2 and "RESTORE_ARCHIVE_DIGEST_MISMATCH" in wrong.stdout
     empty = run(
         base
         + [
             "--entrypoint",
             "python",
-            "agentic-closure-engine:0.3.0",
+            "agentic-closure-engine:0.3.1",
             "-I",
             "-c",
             "from pathlib import Path; "
@@ -97,14 +97,14 @@ def main():
     )
     assert empty.returncode == 0 and "NO_INSTALLATION_FILES" in empty.stdout
     first = run(
-        base + ["agentic-closure-engine:0.3.0", "restore", args.trust_hash, args.expected_archive_hash]
+        base + ["agentic-closure-engine:0.3.1", "restore", args.trust_hash, args.expected_archive_hash]
     )
     assert first.returncode == 2 and "BACKUP_STORAGE_ERROR" in first.stdout, first.stderr
     check = (
         "from closure_engine.runtime.container_bootstrap import provision; "
         "provision('/volumes','/profile.json')"
     )
-    blocked = run(base + ["--entrypoint", "python", "agentic-closure-engine:0.3.0", "-I", "-c", check])
+    blocked = run(base + ["--entrypoint", "python", "agentic-closure-engine:0.3.1", "-I", "-c", check])
     assert blocked.returncode != 0 and "RESTORE_INCOMPLETE" in blocked.stderr, blocked.stderr
     complete = run(
         base
@@ -113,7 +113,7 @@ def main():
             "CHOWN",
             "--cap-add",
             "FOWNER",
-            "agentic-closure-engine:0.3.0",
+            "agentic-closure-engine:0.3.1",
             "restore",
             args.trust_hash,
             args.expected_archive_hash,
@@ -127,7 +127,7 @@ def main():
             "CHOWN",
             "--cap-add",
             "FOWNER",
-            "agentic-closure-engine:0.3.0",
+            "agentic-closure-engine:0.3.1",
             "restore",
             args.trust_hash,
             args.expected_archive_hash,

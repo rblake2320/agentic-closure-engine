@@ -200,6 +200,7 @@ class LocalCustody:
             return {
                 "version": "v1",
                 "trust_hash": self.trust.hash,
+                "trust": self.trust.data,
                 "contracts": export["contracts"],
                 "events": export["events"],
                 "from_sequence": from_sequence,

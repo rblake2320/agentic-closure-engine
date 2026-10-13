@@ -66,8 +66,18 @@ def main(argv=None):
                 raise ClosureError("TRUST_ANCHOR_MISMATCH")
             store = EvidenceStore(args.store, create=False)
             if args.command == "evaluate-run":
-                bundle = read_json(args.bundle)
-                if set(bundle) != {"mode", "contract", "approval", "binding", "records", "receipts"}:
+                from .runtime.portable import RUN_FIELDS, read_bundle, verify_bundle
+
+                bundle = read_bundle(args.bundle)
+                if isinstance(bundle, dict) and "portable" in bundle:
+                    verify_bundle(bundle, args.expected_trust_hash)
+                    bundle = {key: bundle[key] for key in RUN_FIELDS}
+                else:
+                    # Legacy run inputs retain their original single-protocol-item bound.
+                    from .protocol import canonical
+
+                    canonical(bundle)
+                if set(bundle) != RUN_FIELDS:
                     raise ClosureError("INVALID_RUN_BUNDLE")
                 if bundle["mode"] not in {"offline-fixture", "runtime"}:
                     raise ClosureError("UNSUPPORTED_RUNTIME_MODE")

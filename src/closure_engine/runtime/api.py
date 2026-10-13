@@ -8,11 +8,13 @@ that signs a caller-supplied object or changes evaluator/probe definitions.
 """
 
 import base64
+import json
 import mimetypes
 import re
+import time
 from pathlib import Path
 
-from ..protocol import ClosureError, strict_loads
+from ..protocol import MAX_BYTES, ClosureError, strict_loads
 from .roles import propose_args
 from .rpc import (
     READ_TIMEOUT_S,
@@ -44,11 +46,17 @@ STATUS = {
     "TARGET_NOT_ENROLLED": 404,
     "INTENT_UNKNOWN": 404,
     "ROUTE_NOT_FOUND": 404,
+    "METHOD_NOT_ALLOWED": 405,
     "TRANSACTION_ALREADY_EXISTS": 409,
     "ALREADY_APPROVED": 409,
     "RUN_ALREADY_BOUND": 409,
     "DEPLOYMENT_ALREADY_ATTEMPTED": 409,
     "NOT_CLOSABLE": 409,
+    "TRANSACTION_TERMINAL": 409,
+    "RECOVERY_NOT_REQUIRED": 409,
+    "OBSERVATION_NOT_ALLOWED": 409,
+    "ARTIFACT_TOO_LARGE": 413,
+    "INPUT_TOO_LARGE": 413,
     "OBSERVATION_WINDOW_OPEN": 409,
     "STALE_LEDGER_HEAD": 409,
     "ILLEGAL_TRANSITION": 409,
@@ -95,6 +103,32 @@ class _Handler(ServiceHandler):
     def do_POST(self):
         self._handle("POST")
 
+    def do_DELETE(self):
+        self._handle("DELETE")
+
+    def do_PUT(self):
+        self._handle("PUT")
+
+    def do_PATCH(self):
+        self._handle("PATCH")
+
+    def do_OPTIONS(self):
+        self._handle("OPTIONS")
+
+    def send_json(self, status, value=None, raw=None, content_type="application/json"):
+        if status != 405:
+            return super().send_json(status, value, raw, content_type)
+        body = json.dumps(value, sort_keys=True).encode()
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Allow", "GET, POST")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle(self, method):
         if not self.host_ok():
             return self.send_json(403, {"error": "HOST_OR_ORIGIN_REJECTED"})
@@ -112,11 +146,56 @@ class _Handler(ServiceHandler):
         except RoleDenied as exc:
             return self.send_json(403, {"error": "ROLE_REQUIRED", "role": exc.role})
         except ClosureError as exc:
-            return self.send_json(
-                STATUS.get(exc.code, 400), {"error": exc.code, "detail": public_detail(exc)}
-            )
+            if STATUS.get(exc.code) == 413:
+                self.close_connection = True
+            detail = public_detail(exc)
+            while detail.startswith(exc.code):
+                detail = detail[len(exc.code) :].lstrip(": ")
+            value = {"error": exc.code}
+            if detail:
+                value["detail"] = detail
+            self.send_json(STATUS.get(exc.code, 400), value)
+            if exc.code == "INPUT_TOO_LARGE":
+                self._drain_rejected_upload()
+            return
         except (OSError, KeyError, TypeError, ValueError) as exc:
             return self.send_json(500, {"error": "RUNTIME_ERROR", "type": type(exc).__name__})
+
+    def _drain_rejected_upload(self):
+        """After sending 413, consume a bounded rejected upload before TCP close.
+
+        Closing with unread upload bytes can reset Windows TCP before the client reads the
+        JSON response. Send first (headers-only clients receive 413 immediately), then discard
+        at most 4 MiB for 0.5 seconds; never allocate the upload or wait for an absent body.
+        Bodies already consumed by strict JSON parsing do not need this transport cleanup.
+        """
+        value = self.headers.get("Content-Length", "")
+        if not value.isdigit() or int(value) <= 2 * MAX_BYTES:
+            return
+        remaining = min(int(value), 4 * MAX_BYTES)
+        deadline = time.monotonic() + 0.5
+        self.connection.settimeout(0.1)
+        try:
+            while remaining and time.monotonic() < deadline:
+                chunk = self.rfile.read1(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (TimeoutError, OSError):
+            return
+
+    @staticmethod
+    def _existing_legacy_subject(runtime, tx):
+        """Only already-stored legacy slash subjects may use the path routing namespace.
+
+        New proposals retain the strict external validator. Dot segments are never routed;
+        unknown suffixes are routes, not synthetic transaction IDs. Custody resolves IDs via
+        hashed storage keys, so this existence check does not interpret an ID as a file path.
+        """
+        if any(part in {".", ".."} for part in tx.split("/")):
+            raise ClosureError("ROUTE_NOT_FOUND")
+        if "/" in tx and not runtime.custody.exists(tx):
+            raise ClosureError("ROUTE_NOT_FOUND")
 
     @staticmethod
     def _require(principal, role):
@@ -127,7 +206,13 @@ class _Handler(ServiceHandler):
         runtime = self.server.runtime
         if method == "GET":
             if path == "/api/v1/whoami":
-                return 200, principal
+                mode = (
+                    "single-operator-administration"
+                    if {"actor", "owner"} <= set(principal["roles"])
+                    else "role-scoped"
+                )
+                # This is disclosure, not a grant or a human-separation certificate.
+                return 200, dict(principal, approval_mode=mode)
             if path == "/api/v1/status":
                 return 200, runtime.status()
             if path == "/api/v1/audit-export":
@@ -147,15 +232,19 @@ class _Handler(ServiceHandler):
                 }
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/contract", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.contract(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/closure", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.closure(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX + r"/bundle", path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.export_bundle(match.group(1))
             match = re.fullmatch(r"/api/v1/transactions/" + TX, path)
             if match:
+                self._existing_legacy_subject(runtime, match.group(1))
                 return 200, runtime.status(match.group(1))
             raise ClosureError("ROUTE_NOT_FOUND")
         if method != "POST":
@@ -177,6 +266,7 @@ class _Handler(ServiceHandler):
                 raise ClosureError("ROUTE_NOT_FOUND")
             role, method_name = ACTIONS[match.group(2)]
             self._require(principal, role)
+            self._existing_legacy_subject(runtime, match.group(1))
             if match.group(2) == "observe":
                 phase = body.get("phase", "all")
                 if set(body) - {"phase"} or phase not in {"all", "instant", "window"}:

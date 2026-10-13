@@ -40,6 +40,11 @@ STATUS = {
     "RUN_ALREADY_BOUND": 409,
     "DEPLOYMENT_ALREADY_ATTEMPTED": 409,
     "NOT_CLOSABLE": 409,
+    "TRANSACTION_TERMINAL": 409,
+    "RECOVERY_NOT_REQUIRED": 409,
+    "OBSERVATION_NOT_ALLOWED": 409,
+    "ARTIFACT_TOO_LARGE": 413,
+    "INPUT_TOO_LARGE": 413,
     "OBSERVATION_WINDOW_OPEN": 409,
     "STALE_LEDGER_HEAD": 409,
     "SERVICE_UNREACHABLE": 502,
@@ -51,10 +56,14 @@ def propose_args(body):
     required = {"target_id", "transaction_id", "artifact_base64", "intent"}
     if not required <= set(body) <= required | PROPOSE_OPTIONS:
         raise ClosureError("INVALID_REQUEST")
+    from .service import MAX_ARTIFACT_BYTES
+
     try:
         artifact = base64.b64decode(body["artifact_base64"], validate=True)
     except (ValueError, TypeError) as exc:
         raise ClosureError("ARTIFACT_ENCODING_INVALID") from exc
+    if len(artifact) > MAX_ARTIFACT_BYTES:
+        raise ClosureError("ARTIFACT_TOO_LARGE", "decoded artifact exceeds 524288 bytes")
     options = {k: body[k] for k in PROPOSE_OPTIONS if k in body}
     numbers = {k: v for k, v in options.items() if k not in {"expect", "allow_partial"}}
     if "allow_partial" in options and not isinstance(options["allow_partial"], bool):
@@ -255,17 +264,15 @@ class DistributedRuntime:
             "ledger_head": view["verified_head"],
             "ledger_sequence": view["sequence"],
             **self._closure_fields(view["packet"]),
+            **self._operational_view(tx, view),
         }
 
+    def _operational_view(self, tx, view):
+        from .service import operational_view
+
+        return operational_view(self.custody, tx, view["state"] or "PROPOSED", view["packet"])
+
     def export_bundle(self, tx):
-        meta = self.custody.tx(tx)
-        if meta["binding"] is None:
-            raise ClosureError("RUN_BINDING_REQUIRED", tx)
-        return {
-            "mode": "runtime",
-            "contract": meta["contract"],
-            "approval": meta["approval"],
-            "binding": meta["binding"],
-            "records": self.custody.records(tx),
-            "receipts": self.custody.receipts(tx),
-        }
+        from .portable import export_bundle
+
+        return export_bundle(self.custody, tx)

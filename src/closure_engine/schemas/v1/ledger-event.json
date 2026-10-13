@@ -520,6 +520,15 @@
                               "type": "string",
                               "format": "date-time",
                               "pattern": "Z$"
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "pattern": "^[A-Z][A-Z0-9_]{0,79}$"
+                            },
+                            "target_http_status": {
+                              "type": "integer",
+                              "minimum": 100,
+                              "maximum": 599
                             }
                           },
                           "required": [

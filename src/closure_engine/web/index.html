@@ -48,6 +48,7 @@
         <button id="propose" class="new">＋ Propose transaction</button>
         <div class="identity">
           <p id="principal"></p>
+          <p id="approval-mode" class="hint" aria-live="polite"></p>
           <button id="logout" class="text">Disconnect ↗</button>
         </div>
       </aside>
@@ -190,7 +191,8 @@
             maxlength="20000"
             placeholder='{"primary-check-id": "required value"}'
           ></textarea></label
-        ><label>Artifact file<input id="artifact" type="file" /></label
+        ><p class="hint">New transaction IDs: letters/digits, dot, underscore or hyphen; no slash or '..'.</p>
+        <label>Artifact file (maximum 512 KiB decoded bytes)<input id="artifact" type="file" /></label
         ><label
           >Artifact text (alternative to file)<textarea
             name="artifact_text"
