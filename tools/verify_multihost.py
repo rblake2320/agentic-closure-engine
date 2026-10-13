@@ -561,6 +561,9 @@ def orchestrate(args):
         "ports": {"tls": args.port, "target_loopback": args.target_port},
         "ace_sha256": args.ace_sha256,
         "awl_sha256": args.awl_sha256,
+        "dependency_locks": {
+            name: sha(path) for name, path in (("ace", args.ace_lock), ("awl", args.awl_lock)) if path
+        },
         "restrictions": (
             "new own roots only; no global CA/ACL/firewall/shared service changes; "
             "viewer secret only crosses to Windows"
@@ -593,9 +596,35 @@ print(json.dumps({{'machine':platform.node(),'platform':platform.platform(),'pyt
             remote_command(["python3", "-m", "venv", root + "/venv"]),
             log=out / "remote-venv.log",
         )
+        if args.ace_lock:
+            transfer(args.ssh_alias, args.ace_lock, root + "/requirements-runtime.lock")
+            remote(
+                args.ssh_alias,
+                remote_command(
+                    [
+                        executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--require-hashes",
+                        "-r",
+                        root + "/requirements-runtime.lock",
+                    ]
+                ),
+                log=out / "remote-locked-dependencies.log",
+            )
         remote(
             args.ssh_alias,
-            remote_command([executable, "-m", "pip", "install", root + "/" + Path(args.ace_wheel).name]),
+            remote_command(
+                [
+                    executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    *(["--no-deps"] if args.ace_lock else []),
+                    root + "/" + Path(args.ace_wheel).name,
+                ]
+            ),
             log=out / "remote-install.log",
         )
         transfer(args.ssh_alias, Path(__file__).absolute(), root + "/verify_multihost.py")
@@ -675,12 +704,27 @@ print(json.dumps({{'machine':platform.node(),'platform':platform.platform(),'pyt
         result["phase"] = "windows-install"
         run([sys.executable, "-m", "venv", str(out / "receiver-venv")], log=out / "windows-venv.log")
         python = out / "receiver-venv/Scripts/python.exe"
+        for name, lock in (("ace", args.ace_lock), ("awl", args.awl_lock)):
+            if lock:
+                run(
+                    [
+                        str(python),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--require-hashes",
+                        "-r",
+                        str(Path(lock).absolute()),
+                    ],
+                    log=out / ("windows-" + name + "-locked-dependencies.log"),
+                )
         run(
             [
                 str(python),
                 "-m",
                 "pip",
                 "install",
+                *(["--no-deps"] if args.ace_lock and args.awl_lock else []),
                 str(Path(args.ace_wheel).absolute()),
                 str(Path(args.awl_wheel).absolute()),
             ],
@@ -851,6 +895,8 @@ def main():
     )
     parser.add_argument("--config")
     parser.add_argument("--negative-label", choices=("trusted-active", "unknown-ca", "wrong-hostname"))
+    parser.add_argument("--ace-lock")
+    parser.add_argument("--awl-lock")
     parser.add_argument("--ace-wheel")
     parser.add_argument("--ace-sha256")
     parser.add_argument("--awl-wheel")
