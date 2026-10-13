@@ -42,7 +42,7 @@ function Assert-SingleAuthority([string]$TrustPin) {
         $otherProject = $metadata.Config.Labels.'com.docker.compose.project'
         if ($otherProject -eq $DeploymentName) { continue }
         $otherPin = $metadata.Config.Labels.'ace.trust_hash'
-        if (-not $otherPin -and $metadata.Config.Image -in @('agentic-closure-engine:0.3.0','agentic-closure-engine:0.3.1')) {
+        if (-not $otherPin -and $metadata.Config.Image -in @('agentic-closure-engine:0.3.0','agentic-closure-engine:0.3.1','agentic-closure-engine:0.4.0.dev1')) {
             $otherPin = (& docker exec $containerId python -I -c "from pathlib import Path; print(Path('/state/operator/trust.pin').read_text().strip())").Trim()
             if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect an existing ACE custody identity; startup refused.' }
         }
@@ -78,7 +78,7 @@ Push-Location -LiteralPath $projectRoot
 $previousRuntime, $previousConsole, $previousPublisher, $previousTrust = $env:ACE_RUNTIME_DIRECTORY, $env:ACE_CONSOLE_PORT, $env:ACE_PUBLISHER_PORT, $env:ACE_TRUST_HASH
 try {
     $env:ACE_RUNTIME_DIRECTORY, $env:ACE_CONSOLE_PORT, $env:ACE_PUBLISHER_PORT = $runtime, "$ConsolePort", "$PublisherPort"
-    docker build -t agentic-closure-engine:0.3.1 .
+    docker build -t agentic-closure-engine:0.4.0.dev1 .
     if ($LASTEXITCODE -ne 0) { throw 'ACE image build failed.' }
     if (-not (Test-Path -LiteralPath $existingPin)) {
         & docker @composeArgs run --rm --no-deps -T bootstrap bootstrap

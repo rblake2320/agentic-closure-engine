@@ -45,7 +45,7 @@ $arguments += @('--tmpfs','/scratch:rw,noexec,nosuid,size=1g,mode=700',
  '--mount',"type=bind,source=$backup,target=/backup,readonly",
  '--mount',"type=bind,source=$keyFile,target=/backup-key/snapshot.key,readonly",
  '--mount',"type=bind,source=$checkpointFile,target=/anchor/checkpoint.json,readonly",
- 'agentic-closure-engine:0.3.1','restore',$TrustHash,$ExpectedArchiveHash)
+ 'agentic-closure-engine:0.4.0.dev1','restore',$TrustHash,$ExpectedArchiveHash)
 & docker @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Restore refused or failed. Source archive and destination state are retained; no services were started.' }
 New-Item -ItemType Directory -Path $staging -Force | Out-Null
@@ -72,7 +72,7 @@ for path in entries:
     finally:
         temporary.unlink(missing_ok=True)
 '@
-$copyArgs = @('run','--rm','--network','none','--read-only','--user','0:0','--mount',"type=volume,source=$($DeploymentName)_export-data,target=/exports,readonly",'--mount',"type=bind,source=$staging,target=/configured",'--entrypoint','python','agentic-closure-engine:0.3.1','-I','-c',$copyCode)
+$copyArgs = @('run','--rm','--network','none','--read-only','--user','0:0','--mount',"type=volume,source=$($DeploymentName)_export-data,target=/exports,readonly",'--mount',"type=bind,source=$staging,target=/configured",'--entrypoint','python','agentic-closure-engine:0.4.0.dev1','-I','-c',$copyCode)
 & docker @copyArgs
 if ($LASTEXITCODE -ne 0) { throw "Restored configuration export failed; volumes and staging retained at $staging. Correct the storage failure and retry the same command; no runtime was promoted." }
 [IO.Directory]::Move($staging, $runtime)
