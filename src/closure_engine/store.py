@@ -1,10 +1,12 @@
 """Content-addressed evidence with bounded reads and verified atomic creation."""
 
+import json
 import os
 import sys
 import tempfile
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 
 from .protocol import MAX_BYTES, ClosureError, canonical, digest, strict_loads
@@ -30,6 +32,43 @@ class EvidenceStore:
         self._replay_cache = OrderedDict()
         self._replay_cache_size = 0
         self._replay_cache_lock = threading.Lock()
+        self._read_traces = threading.local()
+
+    @contextmanager
+    def trace_reads(self):
+        """Capture actual successful semantic reads, including nested replay cache reads.
+
+        Failed optional reads disable prefix retention too. This trace is thread-local;
+        no caller replaces the store or can supply an asserted dependency manifest.
+        """
+        trace = {"references": set(), "failed": False}
+        traces = getattr(self._read_traces, "active", [])
+        self._read_traces.active = [*traces, trace]
+        try:
+            yield trace
+        finally:
+            self._read_traces.active = traces
+
+    def _cached_prefix(self, key):
+        entry = self._memo_get(("prefix", *key))
+        if entry is None:
+            return None
+        references, serialized, _ = entry
+        # This is trusted internally produced, immutable process memory, not a protocol
+        # input. Its bounded aggregate can exceed the per-object wire size limit.
+        return references, json.loads(serialized)
+
+    def _remember_prefix(self, key, references, result):
+        # Serialized immutable state shares the exact same byte/count budget as all
+        # other pools. It is never written to disk or restored from an operator packet.
+        raw = json.dumps(result, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self._memo_remember(("prefix", *key), tuple(sorted(set(references))), raw)
+
+    def _forget_prefix(self, key):
+        with self._replay_cache_lock:
+            entry = self._replay_cache.pop(("prefix", *key), None)
+            if entry is not None:
+                self._replay_cache_size -= entry[2]
 
     def replay_cache_info(self):
         """Bounded process-local diagnostic counters; never an authority or persisted status."""
@@ -165,6 +204,17 @@ class EvidenceStore:
         return evidence_hash
 
     def get(self, evidence_hash):
+        try:
+            raw = self._physical_get(evidence_hash)
+        except Exception:
+            for trace in getattr(self._read_traces, "active", []):
+                trace["failed"] = True
+            raise
+        for trace in getattr(self._read_traces, "active", []):
+            trace["references"].add(evidence_hash)
+        return raw
+
+    def _physical_get(self, evidence_hash):
         path = self.path_for(evidence_hash)
         try:
             with path.open("rb") as stream:

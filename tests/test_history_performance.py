@@ -2,15 +2,21 @@
 
 import copy
 import cProfile
+import json
 import os
 import pstats
 import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 from test_ledger import begin, event
 from test_ledger import packet as ledger_packet
 
 from closure_engine.crypto import TrustStore, sign
+from closure_engine.ledger import Ledger
 from closure_engine.protocol import GENESIS, ClosureError, canonical, digest, timestamp
 from closure_engine.store import EvidenceStore
 from closure_engine.verdicts import close_run, replay_packet
@@ -203,6 +209,7 @@ def accepted_ledger(run, tmp_path):
 def test_authenticated_old_bytes_do_not_authorize_changed_physical_history(run, tmp_path, mutation):
     ledger = accepted_ledger(run, tmp_path)
     checkpoint = ledger.checkpoint(run["keys"]["custodian"], timestamp(run["start"] + 60000))
+    ledger.anchor = checkpoint
     before = ledger.path.stat()
     with sqlite3.connect(ledger.path) as db:
         if mutation == "delete":
@@ -222,6 +229,8 @@ def test_authenticated_old_bytes_do_not_authorize_changed_physical_history(run, 
         else:
             db.execute("UPDATE events SET sequence=900 WHERE sequence=1")
     os.utime(ledger.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ClosureError):
+        ledger.snapshot()  # warm prefix must invalidate, then classify with native replay
     with pytest.raises(ClosureError):
         ledger.verify(checkpoint)
     from closure_engine.ledger import Ledger
@@ -249,7 +258,7 @@ def test_contract_authentication_is_bound_to_actual_reloaded_bytes(run, tmp_path
         ledger.snapshot()
 
 
-def test_authenticated_repeated_history_still_runs_every_transition_and_input_obligation(run, tmp_path):
+def test_prefix_reuses_validated_state_but_explicit_audit_applies_all_transitions(run, tmp_path):
     ledger = accepted_ledger(run, tmp_path)
     profile = cProfile.Profile()
     profile.enable()
@@ -258,7 +267,16 @@ def test_authenticated_repeated_history_still_runs_every_transition_and_input_ob
     assert first == second
     stats = pstats.Stats(profile).stats
     applied = sum(data[0] for key, data in stats.items() if key[2] == "_apply")
-    assert applied == 2 * first["sequence"]
+    assert applied == 0
+    audit = cProfile.Profile()
+    audit.enable()
+    ledger.verify()
+    audit.disable()
+    assert (
+        sum(data[0] for key, data in pstats.Stats(audit).stats.items() if key[2] == "_apply")
+        == first["sequence"]
+    )
+    assert ledger.snapshot() == first
     info = run["store"].verification_cache_info()
     assert info["pools"]["auth/event"] and info["pools"]["auth/contract"] and info["pools"]["replay"]
     assert info["entries"] <= 8192 and info["bytes"] <= 64 * 1024 * 1024
@@ -270,7 +288,134 @@ def test_all_authentication_and_replay_pools_share_one_budget(tmp_path):
         store.remember_authentication("event", (str(index),), (b"event" + bytes([index]),))
         store.remember_authentication("contract", (str(index),), (b"contract", b"approval"))
         store.remember_replay((str(index),), [], {"verdict": "PROVEN", "index": index})
+        store._remember_prefix((str(index),), [], {"states": {}, "rows": []})
         info = store.verification_cache_info()
         assert info["entries"] <= 3 and info["bytes"] <= 4096
-    assert store.authentication_cached("event", ("19",), (b"event" + bytes([19]),))
+    assert store._cached_prefix(("19",)) == ((), {"states": {}, "rows": []})
     assert not store.authentication_cached("event", ("19",), (b"eventCHANGED",))
+
+
+@pytest.mark.parametrize("subject", ("baseline", "evaluator", "inputs", "raw"))
+@pytest.mark.parametrize("mutation", ("delete", "same-size-and-mtime"))
+def test_prefix_hit_physically_rechecks_transitive_custody(run, tmp_path, subject, mutation):
+    ledger = accepted_ledger(run, tmp_path)
+    assert run["store"].verification_cache_info()["pools"]["prefix"]
+    body = ledger.technical_packet("transaction-1")["payload"]["body"]
+    reference = {
+        "baseline": run["baseline"],
+        "evaluator": body["evaluator_hash"],
+        "inputs": body["inputs_hash"],
+        "raw": run["records"][0]["observation"]["payload"]["body"]["evidence_hash"],
+    }[subject]
+    path = run["store"].path_for(reference)
+    raw, stat = path.read_bytes(), path.stat()
+    if mutation == "delete":
+        path.unlink()
+    else:
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(ClosureError):
+        ledger.snapshot()
+    path.write_bytes(raw)
+    assert ledger.state("transaction-1") == "ACCEPTED"
+
+
+def test_cached_suffix_preserves_prior_qualified_fail_and_accepts_truthful_control(run, tmp_path):
+    from test_independent_boundary_review import _fail_sample
+
+    evaluator_in_custody(run)
+    ledger = begin(run, tmp_path)
+    ledger.append(event(run, ledger, "VERIFYING", receipt=run["receipts"][0]), ledger.head)
+    records = run["records"] + [_fail_sample(run)]
+    immediate = ledger_packet(run, ledger, now=run["start"], records=records)
+    ledger.append(event(run, ledger, "OBSERVING", packet=immediate), ledger.head)
+    assert ledger.snapshot()["transactions"]["transaction-1"] == "OBSERVING"
+    assert run["store"].verification_cache_info()["pools"]["prefix"]
+    omitted = ledger_packet(run, ledger, records=run["records"])
+    assert omitted["payload"]["body"]["verdict"] == "PROVEN"
+    with pytest.raises(ClosureError, match="LEDGERED_EVIDENCE_OMITTED"):
+        ledger.append(event(run, ledger, "PROVEN", packet=omitted), ledger.head)
+    truthful = ledger_packet(run, ledger, records=records)
+    fabricated = copy.deepcopy(truthful["payload"]["body"])
+    fabricated.update(verdict="PROVEN", recovery_required=False, reason_codes=[])
+    fabricated["checks"]["protected-a"] = "PASS"
+    false_packet = sign(run["keys"]["authority"], "closure-packet", fabricated, fabricated["evaluated_at"])
+    with pytest.raises(ClosureError, match="PACKET_REPLAY_MISMATCH"):
+        ledger.append(event(run, ledger, "PROVEN", packet=false_packet), ledger.head)
+    ledger.append(event(run, ledger, "DISPROVEN", packet=truthful), ledger.head)
+    warm = ledger.snapshot()
+    checkpoint = ledger.checkpoint(run["keys"]["custodian"], timestamp(run["start"] + 60000))
+    reopened = Ledger(ledger.path, run["trust"], EvidenceStore(run["store"].root), checkpoint)
+    assert reopened.snapshot() == warm
+
+
+def test_prefix_result_mutation_and_trust_swap_cannot_change_authority(run, tmp_path):
+    ledger = accepted_ledger(run, tmp_path)
+    before = ledger.snapshot()
+    changed = ledger.snapshot()
+    changed["transactions"]["transaction-1"] = "DISPROVEN"
+    changed["packets"]["transaction-1"]["signature"] = "00" * 64
+    assert ledger.snapshot() == before
+    enrolled = copy.deepcopy(run["trust"].data)
+    enrolled["keys"][0]["issuer"] += "-changed"
+    ledger.trust = TrustStore.from_dict(enrolled)
+    with pytest.raises(ClosureError, match="LEDGER_TRUST_MISMATCH"):
+        ledger.snapshot()
+
+
+def test_real_process_kill_after_validated_prefix_before_append_cold_replays(run, tmp_path):
+    evaluator_in_custody(run)
+    ledger = begin(run, tmp_path)
+    checkpoint = ledger.checkpoint(run["keys"]["custodian"], timestamp(run["start"]))
+    request = event(run, ledger, "VERIFYING", receipt=run["receipts"][0])
+    public = tmp_path / "public.json"
+    public.write_bytes(canonical({"trust": run["trust"].data, "checkpoint": checkpoint}))
+    script = tmp_path / "guarded.py"
+    script.write_text(
+        "import sys,time,json\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+        "from closure_engine.ledger import Ledger\nfrom closure_engine.crypto import TrustStore\n"
+        "from closure_engine.store import EvidenceStore\nfrom closure_engine.protocol import strict_loads\n"
+        "root=Path(sys.argv[2]); p=strict_loads((root/'public.json').read_bytes())\n"
+        "s=EvidenceStore(sys.argv[3],create=False)\n"
+        "l=Ledger(root/'ledger.sqlite',TrustStore.from_dict(p['trust']),s,p['checkpoint'])\n"
+        "result=l.snapshot(); assert s.verification_cache_info()['pools']['prefix']\n"
+        "(root/'ready').write_text(json.dumps(result))\n"
+        "while not (root/'release').exists(): time.sleep(.05)\n",
+        encoding="utf-8",
+    )
+    import closure_engine
+
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            str(script),
+            str(Path(closure_engine.__file__).parent.parent),
+            str(tmp_path),
+            str(run["store"].root),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not (tmp_path / "ready").exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.025)
+        assert (tmp_path / "ready").exists(), child.communicate(timeout=1)
+        assert json.loads((tmp_path / "ready").read_text()) == ledger.snapshot()
+        child.kill()  # exact Popen-owned PID only; never an inventory-derived process
+        child.communicate(timeout=5)
+        assert child.returncode != 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+    profile = cProfile.Profile()
+    profile.enable()
+    cold = Ledger(ledger.path, run["trust"], EvidenceStore(run["store"].root), checkpoint)
+    profile.disable()
+    assert sum(data[0] for key, data in pstats.Stats(profile).stats.items() if key[2] == "_apply") == 5
+    assert cold.state("transaction-1") == "EXECUTING"
+    cold.append(request, cold.head)
+    assert cold.state("transaction-1") == "VERIFYING"
+    assert not list(tmp_path.rglob("*prefix*.json"))

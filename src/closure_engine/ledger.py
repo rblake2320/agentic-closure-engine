@@ -2,6 +2,7 @@
 
 import sqlite3
 import sys
+import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
 from importlib.resources import files
@@ -18,6 +19,22 @@ _AUTH_SOURCE_EPOCH = digest(
         {
             name: digest(files("closure_engine").joinpath(name).read_bytes())
             for name in ("ledger.py", "contracts.py", "crypto.py", "protocol.py")
+        }
+    )
+)
+_PREFIX_SOURCE_EPOCH = digest(
+    canonical(
+        {
+            name: digest(files("closure_engine").joinpath(name).read_bytes())
+            for name in (
+                "ledger.py",
+                "store.py",
+                "verdicts.py",
+                "contracts.py",
+                "crypto.py",
+                "protocol.py",
+                "recovery.py",
+            )
         }
     )
 )
@@ -59,6 +76,7 @@ class Ledger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.trust = trust
         self.store = store
+        self._prefix_owner = str(uuid.uuid4())
         self.anchor = checkpoint
         if self.path.exists() and checkpoint is None:
             raise ClosureError("CHECKPOINT_REQUIRED_FOR_REOPEN")
@@ -345,7 +363,7 @@ class Ledger:
             self.store.get(ref)
         states[tx] = state
 
-    def _verify(self, db, checkpoint=None, additional_checkpoints=()):
+    def _verify(self, db, checkpoint=None, additional_checkpoints=(), *, force_full=False):
         stored_trust = db.execute("SELECT value FROM meta WHERE key='trust_hash'").fetchone()
         if stored_trust is None or stored_trust[0] != self.trust.hash:
             raise ClosureError("LEDGER_TRUST_MISMATCH")
@@ -358,9 +376,66 @@ class Ledger:
             # A failed replay traceback must not retain a live cursor and mask its typed
             # integrity error with Windows WinError 32 during verification-directory cleanup.
             cursor.close()
-        return self._replay_rows(rows, contracts, checkpoint, additional_checkpoints)
+        # Every SQL row is physically reread and freshly hashed, including rows in an
+        # authenticated prefix. SQL hash columns, file metadata and signed checkpoints
+        # alone cannot select a reusable semantic state.
+        fingerprints = [[seq, event_id, digest(raw), stored] for seq, event_id, raw, stored in rows]
+        contract_fingerprints = {
+            tx: [digest(frozen.raw), digest(frozen.approval_raw)] for tx, frozen in contracts.items()
+        }
+        key = (str(self.path), self._prefix_owner, self.trust.hash, _PREFIX_SOURCE_EPOCH)
+        cached = getattr(self.store, "_cached_prefix", None)
+        tracing = getattr(self.store, "trace_reads", None)
+        prefix, references = None, ()
+        entry = None if force_full or cached is None else cached(key)
+        if entry is not None:
+            references, candidate = entry
+            old_rows = candidate["rows"]
+            compatible = (
+                len(old_rows) <= len(fingerprints)
+                and fingerprints[: len(old_rows)] == old_rows
+                and all(
+                    contract_fingerprints.get(tx) == value for tx, value in candidate["contracts"].items()
+                )
+            )
+            if compatible:
+                try:
+                    for reference in references:
+                        # Actual fresh get+SHA for EVERY transitive consumed reference.
+                        self.store.get(reference)
+                except ClosureError:
+                    compatible = False
+            if compatible:
+                prefix = candidate
+            else:
+                self.store._forget_prefix(key)
+                references = ()
+        if tracing is None:
+            return self._replay_rows(rows, contracts, checkpoint, additional_checkpoints)
+        with tracing() as trace:
+            result = self._replay_rows(rows, contracts, checkpoint, additional_checkpoints, _prefix=prefix)
+        if not trace["failed"]:
+            head, seq, states, packets, bindings, _, inputs, last_time = result
+            retained = {
+                "rows": fingerprints,
+                "contracts": contract_fingerprints,
+                "head": head,
+                "sequence": seq,
+                "states": states,
+                "packets": packets,
+                "bindings": bindings,
+                "last_event_time": last_time,
+                "input_sets": {
+                    tx: {"records": sorted(value["records"]), "evaluated_at": value["evaluated_at"]}
+                    for tx, value in inputs.items()
+                },
+            }
+            self.store._remember_prefix(key, set(references) | trace["references"], retained)
+        return result
 
-    def _replay_rows(self, rows, contracts, checkpoint, additional_checkpoints=(), *, scope=None):
+    def _replay_rows(
+        self, rows, contracts, checkpoint, additional_checkpoints=(), *, scope=None, _prefix=None
+    ):
         """Shared signature/chain/time checks; scoped proofs evaluate only their declared subjects.
 
         Foreign event envelopes still authenticate the global chain. Their artifact/evidence
@@ -374,7 +449,20 @@ class Ledger:
         }
         head, seq, last_event_time = GENESIS, 0, None
         seen_event_ids = set()
-        for row_seq, event_id, raw, stored_hash in rows:
+        start = 0
+        if _prefix is not None:
+            # This private seed only comes from _verify after physical prefix and custody
+            # validation. Public scoped replay/import cannot submit a preverified seed.
+            states, packets, bindings = _prefix["states"], _prefix["packets"], _prefix["bindings"]
+            input_sets = {
+                tx: {"records": frozenset(value["records"]), "evaluated_at": value["evaluated_at"]}
+                for tx, value in _prefix["input_sets"].items()
+            }
+            head, seq, last_event_time = _prefix["head"], _prefix["sequence"], _prefix["last_event_time"]
+            start = len(_prefix["rows"])
+            history = {row[0]: row[3] for row in _prefix["rows"]}
+            seen_event_ids = {row[1] for row in _prefix["rows"]}
+        for row_seq, event_id, raw, stored_hash in rows[start:]:
             envelope = self._authenticated_row(raw)
             b = envelope["payload"]["body"]
             event_time = milliseconds(envelope["payload"]["created_at"])
@@ -506,11 +594,12 @@ class Ledger:
 
     def verify(self, checkpoint=None):
         with self._db() as db:
-            return self._verify(db, checkpoint)[0]
+            return self._verify(db, checkpoint, force_full=True)[0]
 
     @property
     def head(self):
-        return self.verify()
+        with self._db() as db:
+            return self._verify(db)[0]
 
     @property
     def sequence(self):
@@ -543,7 +632,7 @@ class Ledger:
         ):
             raise ClosureError("INVALID_EXPORT_RANGE")
         with self._db() as db:
-            head, sequence = self._verify(db)[:2]
+            head, sequence = self._verify(db, force_full=True)[:2]
             contracts = [
                 {"contract": strict_loads(raw), "approval": strict_loads(approval)}
                 for raw, approval in db.execute(
@@ -580,7 +669,7 @@ class Ledger:
     def summary(self, checkpoint=None):
         """Verified head, sequence and every transaction state from one storage snapshot."""
         with self._db() as db:
-            result = self._verify(db, checkpoint)
+            result = self._verify(db, checkpoint, force_full=True)
         return {"verified_head": result[0], "sequence": result[1], "transactions": dict(result[2])}
 
     def state(self, transaction_id):
