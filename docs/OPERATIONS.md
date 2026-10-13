@@ -60,6 +60,19 @@ file. Native `closure-engine init`, `enroll`, `target-enroll`, `tx`, `checkpoint
 and `reconcile` commands support operator-owned installations. Verification requires an
 operator-held `--expected-trust-hash`; caller-selected clocks are not runtime inputs.
 
+### Approval mode (separation of duties)
+
+`api-serve --approval-mode single-operator` (default) keeps one credential free to hold every
+role; `/api/v1/whoami` and the console disclose `single-operator-administration` for such a
+credential, so approval by it is visible as not independent. `--approval-mode independent`
+enforces separation: the gateway refuses to start if any credential holds both `actor`
+(author) and `owner` (approver), reports `APPROVAL_SEPARATION_VIOLATED` naming the principal,
+and on live reload a credential file that gains such a credential locks the API (every request
+is 401) until the file is corrected. Proposals and recovery requests then carry the actor key,
+approvals the owner key, and the two can never be the same bearer token. `whoami` reports
+`independent-approval`. This separates credentials, not people: issue the actor and owner tokens
+to different humans or systems and keep them in different custody.
+
 ## Cold backup and anchored restore
 
 Stop/start preserves all volumes. Backup stops only this deployment, encrypts its state,

@@ -17,6 +17,9 @@ from pathlib import Path
 from ..protocol import MAX_BYTES, ClosureError, strict_loads
 from .roles import propose_args
 from .rpc import (
+    APPROVAL_MODES,
+    APPROVER_ROLE,
+    AUTHOR_ROLE,
     READ_TIMEOUT_S,
     ROLES,
     CredentialSource,
@@ -41,7 +44,10 @@ ACTIONS = {
     "run": ("operator", "run"),
     "recover": ("actor", "begin_recovery"),
 }
+AUTHOR_ACTIONS = frozenset({"propose", "recover"})
+APPROVER_ACTIONS = frozenset({"approve", "accept"})
 STATUS = {
+    "APPROVAL_SEPARATION_REQUIRED": 403,
     "TRANSACTION_UNKNOWN": 404,
     "TARGET_NOT_ENROLLED": 404,
     "INTENT_UNKNOWN": 404,
@@ -65,7 +71,24 @@ STATUS = {
     "TARGET_UNREACHABLE": 502,
     "SERVICE_UNREACHABLE": 502,
 }
-__all__ = ["ROLES", "ApiServer", "load_credentials", "load_credentials_value"]
+__all__ = ["ROLES", "ApiServer", "check_separation", "load_credentials", "load_credentials_value"]
+
+
+def check_separation(approval_mode, principal, action):
+    """Route-time separation of duties (defence in depth behind credential validation).
+
+    In ``independent`` mode a principal holding ``owner`` may not author (propose, recover) and
+    a principal holding ``actor`` may not approve (approve, accept). ``single-operator`` mode
+    never refuses here; it only discloses itself through ``/whoami``."""
+    if approval_mode != "independent":
+        return
+    roles = set(principal["roles"])
+    if (action in AUTHOR_ACTIONS and APPROVER_ROLE in roles) or (
+        action in APPROVER_ACTIONS and AUTHOR_ROLE in roles
+    ):
+        raise ClosureError(
+            "APPROVAL_SEPARATION_REQUIRED", f"{action} is refused for a principal holding actor and owner"
+        )
 
 
 def load_credentials_value(credentials):
@@ -85,13 +108,29 @@ def load_credentials(path):
 
 class ApiServer(ServiceServer):
     def __init__(
-        self, address, runtime, credentials, static_dir=None, *, hosts=None, read_timeout=READ_TIMEOUT_S
+        self,
+        address,
+        runtime,
+        credentials,
+        static_dir=None,
+        *,
+        hosts=None,
+        read_timeout=READ_TIMEOUT_S,
+        approval_mode="single-operator",
     ):
+        if approval_mode not in APPROVAL_MODES:
+            raise ClosureError("APPROVAL_MODE_INVALID", str(approval_mode))
+        self.approval_mode = approval_mode
         self.runtime = runtime
         self.static_dir = Path(static_dir).resolve() if static_dir else None
         if self.static_dir is not None and not self.static_dir.is_dir():
             raise ClosureError("STATIC_DIR_MISSING", str(self.static_dir))
         super().__init__(address, _Handler, hosts=hosts, credentials=credentials, read_timeout=read_timeout)
+        try:
+            self.credentials.require(approval_mode)  # fail closed before serving a single request
+        except ClosureError:
+            self.server_close()
+            raise
 
 
 class _Handler(ServiceHandler):
@@ -206,12 +245,16 @@ class _Handler(ServiceHandler):
         runtime = self.server.runtime
         if method == "GET":
             if path == "/api/v1/whoami":
-                mode = (
-                    "single-operator-administration"
-                    if {"actor", "owner"} <= set(principal["roles"])
-                    else "role-scoped"
-                )
-                # This is disclosure, not a grant or a human-separation certificate.
+                if self.server.approval_mode == "independent":
+                    # Enforced: no credential may hold both actor and owner (rpc.validate_credentials).
+                    mode = "independent-approval"
+                else:
+                    mode = (
+                        "single-operator-administration"
+                        if {"actor", "owner"} <= set(principal["roles"])
+                        else "role-scoped"
+                    )
+                    # This is disclosure, not a grant or a human-separation certificate.
                 return 200, dict(principal, approval_mode=mode)
             if path == "/api/v1/status":
                 return 200, runtime.status()
@@ -253,6 +296,7 @@ class _Handler(ServiceHandler):
         with self.server.write_lock:
             if path == "/api/v1/transactions":
                 self._require(principal, "actor")
+                check_separation(self.server.approval_mode, principal, "propose")
                 target, tx, artifact, intent, options = propose_args(body)
                 return 201, runtime.propose(target, tx, artifact, intent=intent, **options)
             if path == "/api/v1/reconcile":
@@ -266,6 +310,7 @@ class _Handler(ServiceHandler):
                 raise ClosureError("ROUTE_NOT_FOUND")
             role, method_name = ACTIONS[match.group(2)]
             self._require(principal, role)
+            check_separation(self.server.approval_mode, principal, match.group(2))
             self._existing_legacy_subject(runtime, match.group(1))
             if match.group(2) == "observe":
                 phase = body.get("phase", "all")

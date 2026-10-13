@@ -13,7 +13,7 @@ Status: approved. The offline kernel implements signature purpose, enrolled role
 
 The verifier owns an observation-signing key, not a verdict-signing key. Signing authority is bound to enrolled identity and purpose; payload-provided identities are never self-enrolling.
 
-An operator/installer controls public-key enrollment, evaluator installation, authority policy installation, and storage custody. It is an explicit trusted administrative root, separate from the four workflow domains. Its ledger custodian exposes authenticated append/read operations; workflow domains cannot open mutable ledger storage directly. Compromise of this root is a material trust failure. Four named processes under the owner's same administrative token do not satisfy this model.
+An operator/installer controls public-key enrollment, evaluator installation, authority policy installation, and storage custody. It is an explicit trusted administrative root, separate from the four workflow domains. Its ledger custodian exposes authenticated append/read operations; workflow domains cannot open mutable ledger storage directly. Compromise of this root is a material trust failure. Four named processes under the owner's same administrative token do not satisfy this model. The operator API enforces the author/approver split when started with `--approval-mode independent` (see OPERATIONS.md); the default single-operator mode only discloses that approval is not independent.
 
 ## Protected resources
 
