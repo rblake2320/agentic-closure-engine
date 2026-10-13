@@ -328,3 +328,21 @@ def test_credential_revocation_is_live(topology):
     assert revoke.returncode == 0, revoke.stderr
     assert call(t["gateway"], "GET", "/api/v1/status", None, t["viewer"])[0] == 401
     assert call(t["gateway"], "GET", "/api/v1/status", None, t["user"])[0] == 200
+
+
+def test_gateway_attribution_reaches_custody_through_role_services(topology):
+    """Keyless gateway -> actor/owner role services -> custody service: the authenticated gateway
+    principal is persisted with the transaction, not a client body field."""
+    t = topology
+    body = proposal("iso-attr", artifact(7))
+    status, value = call(
+        t["gateway"], "POST", "/api/v1/transactions", {**body, "proposed_by": "mallory"}, t["user"]
+    )
+    assert status == 400, value  # the public API refuses caller-selected attribution
+    status, value = call(t["gateway"], "POST", "/api/v1/transactions", body, t["user"])
+    assert status == 201, value
+    status, value = call(t["gateway"], "POST", "/api/v1/transactions/iso-attr/approve", None, t["user"])
+    assert status == 200 and value["state"] == "APPROVED", value
+    assert (value["proposed_by"], value["approved_by"]) == ("release-user", "release-user")
+    status, value = call(t["gateway"], "GET", "/api/v1/transactions/iso-attr", None, t["user"])
+    assert status == 200 and (value["proposed_by"], value["approved_by"]) == ("release-user", "release-user")

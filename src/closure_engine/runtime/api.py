@@ -48,6 +48,7 @@ AUTHOR_ACTIONS = frozenset({"propose", "recover"})
 APPROVER_ACTIONS = frozenset({"approve", "accept"})
 STATUS = {
     "APPROVAL_SEPARATION_REQUIRED": 403,
+    "AUTHOR_BINDING_MISSING": 409,
     "TRANSACTION_UNKNOWN": 404,
     "TARGET_NOT_ENROLLED": 404,
     "INTENT_UNKNOWN": 404,
@@ -298,7 +299,10 @@ class _Handler(ServiceHandler):
                 self._require(principal, "actor")
                 check_separation(self.server.approval_mode, principal, "propose")
                 target, tx, artifact, intent, options = propose_args(body)
-                return 201, runtime.propose(target, tx, artifact, intent=intent, **options)
+                # Attribution comes from the authenticated principal, never from the body.
+                return 201, runtime.propose(
+                    target, tx, artifact, intent=intent, proposed_by=principal["principal"], **options
+                )
             if path == "/api/v1/reconcile":
                 self._require(principal, "broker")
                 return 200, runtime.reconcile()
@@ -319,6 +323,14 @@ class _Handler(ServiceHandler):
                 return 200, runtime.observe(match.group(1), phase=phase)
             if body:
                 raise ClosureError("INVALID_REQUEST", "action takes no body")
+            if match.group(2) == "approve":
+                return 200, runtime.approve(
+                    match.group(1),
+                    approved_by=principal["principal"],
+                    require_independent=self.server.approval_mode == "independent",
+                )
+            if match.group(2) == "recover":
+                return 200, runtime.begin_recovery(match.group(1), proposed_by=principal["principal"])
             return 200, getattr(runtime, method_name)(match.group(1))
 
     def _static(self, method, path):
