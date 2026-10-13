@@ -345,6 +345,19 @@ def test_duplicate_json_refused(release):
 
 
 def test_pre_release_order_preserves_high_water(release):
+    artifact = release["artifact"]
+    with zipfile.ZipFile(artifact) as wheel:
+        members = {name: wheel.read(name) for name in wheel.namelist()}
+    metadata_path = next(name for name in members if name.endswith(".dist-info/METADATA"))
+    members[metadata_path] = members[metadata_path].replace(b"Version: 1.0.0\n", b"Version: 1.0.0.dev1\n")
+    with zipfile.ZipFile(artifact, "w") as wheel:
+        for name, value in members.items():
+            wheel.writestr(name, value)
+    sbom_path = release["bundle"] / "sbom.json"
+    sbom = json.loads(sbom_path.read_text())
+    sbom["metadata"]["component"]["version"] = "1.0.0.dev1"
+    sbom["metadata"]["component"]["hashes"][0]["content"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    save(sbom_path, sbom)
     command(changed_arg(release["issue"], "--version", "1.0.0.dev1"))
     verify = changed_arg(release["verify"], "--expected-version", "1.0.0.dev1")
     assert command(verify)["status"] == "VERIFIED"
@@ -352,3 +365,17 @@ def test_pre_release_order_preserves_high_water(release):
     state["last_version"] = "1.0.0rc1"
     save(release["state"], state)
     assert command(verify, 3)["code"] == "VERSION_REPLAY"
+
+
+def test_release_version_must_match_wheel_metadata_at_issue(release):
+    issue = changed_arg(release["issue"], "--version", "2.0.0")
+    assert command(issue, 3)["code"] == "RELEASE_VERSION_MISMATCH"
+    assert not (release["bundle"] / "release-manifest.json").exists()
+
+
+def test_release_version_must_match_wheel_metadata_at_verify(release):
+    command(release["issue"])
+    resign(release, lambda p: p.update(version="2.0.0"))
+    verify = changed_arg(release["verify"], "--expected-version", "2.0.0")
+    assert command(verify, 3)["code"] == "RELEASE_VERSION_MISMATCH"
+    assert json.loads(release["state"].read_text())["last_version"] is None

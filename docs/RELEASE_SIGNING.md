@@ -66,7 +66,9 @@ against an administrator racing filesystem replacement. Keep downloaded assets i
 restricted custody until verification and prevent mutation before use.
 
 SBOM `metadata.component` must identify the wheel Name/Version and contain its
-exact SHA-256. Its `components` names must equal all direct `Requires-Dist` names
+exact SHA-256. The signed release version must equal the wheel METADATA Version
+at both issuance and consumption; contradictory correctly signed publisher claims
+are refused as `RELEASE_VERSION_MISMATCH`. Its `components` names must equal all direct `Requires-Dist` names
 from the wheel's METADATA, including optional/marker declarations. The tool checks
 this correspondence, not full CycloneDX schema validity or dependency contents.
 Scope is exactly **product wheel and direct declared dependencies**; it excludes

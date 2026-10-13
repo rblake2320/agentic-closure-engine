@@ -218,6 +218,8 @@ def sbom_check(root, payload):
         require(info.file_size <= 1024 * 1024, "WHEEL_METADATA_INVALID")
         metadata = email.parser.BytesParser().parsebytes(wheel.read(metadata_paths[0]))
 
+    require(payload["version"] == metadata["Version"], "RELEASE_VERSION_MISMATCH")
+
     def normalize(name):
         return re.sub(r"[-_.]+", "-", name).lower()
 
