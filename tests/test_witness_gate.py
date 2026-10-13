@@ -1,18 +1,22 @@
 """Real TLS signing service, deployed targets and abrupt custody-process fault boundaries."""
 
+import http.client
 import ipaddress
 import json
 import os
 import queue
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from cryptography import x509
@@ -436,6 +440,29 @@ def test_actor_acceptance_event_is_denied_before_witness_call(gated):
     assert runtime.custody.state("witnessed") == "PROVEN"
 
 
+def test_silent_tcp_before_clienthello_does_not_block_authenticated_witness(gated):
+    runtime, witness, server, _, _ = gated
+    propose(runtime)
+    silent = socket.create_connection(server.server_address, timeout=2)
+    try:
+        time.sleep(0.1)  # ensure the accept loop has seen the real silent peer
+        started = time.monotonic()
+        assert runtime.freeze("witnessed")["state"] == "FROZEN"
+        assert time.monotonic() - started < 3
+        assert witness.checkpoint()["sequence"] == 1
+        silent.settimeout(7)
+        try:
+            closed = silent.recv(1) == b""
+        except ConnectionResetError:
+            closed = True
+        assert closed  # worker's actual TLS read deadline fired
+        propose(runtime, "after-peer-timeout")
+        assert runtime.freeze("after-peer-timeout")["state"] == "FROZEN"
+        assert witness.checkpoint()["sequence"] == 2
+    finally:
+        silent.close()
+
+
 def test_export_sidecar_cannot_substitute_unsigned_policy_digest(gated):
     runtime, _, _, _, _ = gated
     assert run_to_verdict(runtime, "witnessed", artifact(2))[1]["verdict"] == "PROVEN"
@@ -501,3 +528,146 @@ def test_recovery_failure_deadline_must_be_observed_by_witness_clock(gated, phas
         pending = read_json(runtime.custody.root / "witness" / "pending.json", "missing")
         assert milliseconds(pending["receipt"]["body"]["received_at"]) < deadline
         assert runtime.custody.state(tx) == "RECOVERY_REQUIRED"
+
+
+@pytest.mark.parametrize("phase", ["before", "after", "immediate-baseline-drift"])
+def test_child_recovery_failure_uses_actual_receipt_clock_and_preserves_immediate_failure(gated, phase):
+    runtime, witness, _, deployment, _ = gated
+    original = deployment.target("shop/api")
+    upstream = urlsplit(original["base_url"])
+
+    class FaultProxy(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            return
+
+        def do_GET(self):
+            self.forward()
+
+        def do_PUT(self):
+            self.forward()
+
+        def forward(self):
+            if self.server.observation_outage and self.path in {"/answer", "/config", "/other"}:
+                self.server.outage_count += 1
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.connection.close()
+                return
+            else:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length else None
+                connection = http.client.HTTPConnection(upstream.hostname, upstream.port, timeout=5)
+                headers = {
+                    name: value
+                    for name, value in self.headers.items()
+                    if name.lower() not in {"host", "connection", "transfer-encoding"}
+                }
+                try:
+                    connection.request(self.command, self.path, raw, headers)
+                    response = connection.getresponse()
+                    raw, status = response.read(), response.status
+                finally:
+                    connection.close()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), FaultProxy)
+    proxy.daemon_threads = True
+    proxy.observation_outage = False
+    proxy.outage_count = 0
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    profile = dict(original, base_url="http://127.0.0.1:" + str(proxy.server_address[1]))
+    replace_json(deployment.target_path("shop/api"), profile)  # operator enrollment BEFORE either contract
+    try:
+        tx, raw = "child-deadline", artifact(3, other="changed")
+        runtime.propose(
+            "shop/api",
+            tx,
+            raw,
+            intent="Child deadline boundary",
+            expect=expect_of(raw),
+            duration_ms=WINDOW["duration_ms"],
+            min_samples=WINDOW["min_samples"],
+            max_clock_skew_ms=WINDOW["max_clock_skew_ms"],
+            settle_ms=WINDOW["settle_ms"],
+            recovery_deadline_ms=40000,
+        )
+        runtime.approve(tx)
+        runtime.freeze(tx)
+        runtime.baseline(tx)
+        runtime.bind(tx)
+        runtime.deploy(tx)
+        runtime.observe(tx, phase="all")
+        parent_result = runtime.close(tx)
+        if parent_result["state"] == "OBSERVING":
+            parent_result = runtime.close(tx)
+        assert parent_result["verdict"] == "DISPROVEN"
+        parent = runtime.custody.technical_packet(tx)
+        child_id = tx + "/recovery"
+        runtime.begin_recovery(tx)
+        runtime.approve(child_id)
+        runtime.freeze(child_id)
+        runtime.baseline(child_id)
+        runtime.bind(child_id)
+        runtime.deploy(child_id)
+        if phase == "immediate-baseline-drift":
+            status, _ = runtime._client("shop/api", with_token=True).deploy(
+                artifact(2), parent["payload"]["body"]["baseline_hash"], "injected-collateral-baseline-drift"
+            )
+            assert status == 200
+        proxy.observation_outage = phase != "immediate-baseline-drift"
+        runtime.observe(child_id, phase="all")
+        child_result = runtime.close(child_id)
+        if child_result["state"] == "OBSERVING":
+            child_result = runtime.close(child_id)
+        assert child_result["verdict"] == (
+            "DISPROVEN" if phase == "immediate-baseline-drift" else "INDETERMINATE"
+        )
+        assert (proxy.outage_count > 0) == (phase != "immediate-baseline-drift")
+        child = runtime._tx(child_id)
+        deadline = milliseconds(parent["payload"]["body"]["evaluated_at"]) + 40000
+        submitted, head = event(
+            runtime,
+            tx,
+            "RECOVERY_FAILED",
+            at=timestamp(deadline + 1) if phase == "before" else None,
+            packet=child["verdict_packet"],
+        )
+        body = dict(
+            submitted["payload"]["body"],
+            recovery_contract=child["contract"],
+            recovery_approval=child["approval"],
+        )
+        if phase == "after":
+            time.sleep(max(0, deadline - runtime.clock.now_ms() + 30) / 1000)
+        submitted = sign(
+            runtime._identity("authority"),
+            "ledger-event",
+            body,
+            timestamp(deadline + 1) if phase == "before" else runtime.clock.now(),
+        )
+        if phase == "before":
+            config = _config(runtime.custody)
+            gate = WitnessGate(runtime.custody, config)
+            pending = gate._bind(submitted, head)
+            time.sleep(max(0, deadline - runtime.clock.now_ms() - 1000) / 1000)
+            pending["receipt"] = _receipt(config, submitted, pending["nonce"])
+            observed = milliseconds(pending["receipt"]["body"]["received_at"])
+            assert 0 < deadline + 1 - observed <= witness.manifest["future_tolerance_ms"]
+            pending["status"] = "RECEIVED"
+            replace_json(gate.pending_path, pending)
+            with pytest.raises(ClosureError, match="WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED"):
+                runtime.custody.append(submitted, head)
+            assert runtime.custody.state(tx) == "RECOVERY_REQUIRED"
+        else:
+            runtime.custody.append(submitted, head)
+            assert runtime.custody.state(tx) == "RECOVERY_FAILED"
+            record = witness_record(runtime.custody, digest(submitted))
+            observed = milliseconds(record["receipt"]["body"]["received_at"])
+            assert (observed < deadline) == (phase == "immediate-baseline-drift")
+    finally:
+        proxy.shutdown()
+        proxy.server_close()

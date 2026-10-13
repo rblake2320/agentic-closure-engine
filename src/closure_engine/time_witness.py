@@ -532,7 +532,9 @@ def make_server(witness, host="127.0.0.1", port=8790, *, hosts=None, certificate
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(certificate, tls_key)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+        # A silent peer must not hold the accept loop during TLS negotiation. Each request
+        # worker performs its handshake under ServiceHandler's bounded socket timeout.
+        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     return server
 
 

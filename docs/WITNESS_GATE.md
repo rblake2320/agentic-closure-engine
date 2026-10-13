@@ -51,12 +51,15 @@ Authority events request a receipt over the exact signed event's canonical diges
 supplied candidate. Native ledger role/state checks remain decisive after witnessing. A
 receipt is **not** permission to append a logically invalid transition or incomplete verdict.
 
-For null-child `RECOVERY_FAILED`, the gate reuses native `recovery_status` with the signed
-witness reception instant and the immutable parent contract's retained recovery deadline.
+For every `RECOVERY_FAILED`, the gate reuses native `recovery_status` with the signed
+witness reception instant, the immutable parent contract's retained recovery deadline,
+and the frozen child contract/owner approval when a child packet is supplied.
 It refuses `WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED` while that independent receipt
 clock says the deadline has not elapsed, even if the signer's timestamp leads by the
 permitted two-second skew. A pre-deadline receipt cannot become an after-deadline proof
 merely by waiting before consumption. New after-deadline reception is required.
+Immediate independently observed restoration failure remains failure before the deadline;
+an unverified child whose deadline has not elapsed remains recovery-required.
 
 Custody writes `witness/pending.json` before calling the witness, binding the exact signed
 event, event digest, expected ledger head, subject, subject purpose, policy digest and fresh

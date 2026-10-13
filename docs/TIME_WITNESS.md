@@ -124,6 +124,8 @@ certificate verification. Never disable certificate verification. Credentials tr
 to the configured origin: the shared service client refuses redirects and ignores environment
 proxies. Host/Origin and duplicate credential/body header checks reuse ACE service plumbing.
 Only authenticated `POST /receipts` and `GET /checkpoint` are supported.
+TLS handshakes run in individual request workers under their socket deadline. A silent TCP
+peer before ClientHello cannot hold the listener's accept loop or block authenticated clients.
 
 ## Executable controls
 

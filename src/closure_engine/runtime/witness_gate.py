@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ..contracts import freeze
 from ..ledger import ROLES as EVENT_ROLES
 from ..protocol import MAX_BYTES, ClosureError, canonical, digest, milliseconds, strict_loads
 from ..recovery import recovery_status
@@ -403,24 +404,34 @@ class WitnessGate:
         if subject["payload"]["purpose"] != "ledger-event":
             return
         body = subject["payload"]["body"]
-        if body["state"] != "RECOVERY_FAILED" or body["packet"] is not None:
+        if body["state"] != "RECOVERY_FAILED":
             return
         receipt = _signature(pending["receipt"], self.config["manifest"])
         parent = self.custody.ledger.technical_packet(body["transaction_id"])
         if parent is None:
             raise ClosureError("WITNESS_GATE_RECOVERY_PARENT_MISSING")
         inputs = strict_loads(self.custody.store.get(parent["payload"]["body"]["inputs_hash"]))
+        child = None
+        if body["packet"] is not None:
+            if body["recovery_contract"] is None or body["recovery_approval"] is None:
+                raise ClosureError("RECOVERY_CONTRACT_REQUIRED")
+            child = freeze(body["recovery_contract"], body["recovery_approval"], self.custody.trust)
         result = recovery_status(
             parent,
-            None,
-            None,
+            child,
+            body["packet"],
             self.custody.trust,
             milliseconds(receipt["received_at"]),
             inputs["contract"]["recovery"]["deadline_ms"],
             store=self.custody.store,
         )
         if result["state"] != "RECOVERY_FAILED":
-            raise ClosureError("WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED")
+            code = (
+                "WITNESS_GATE_RECOVERY_DEADLINE_NOT_OBSERVED"
+                if result["state"] == "RECOVERY_REQUIRED"
+                else "WITNESS_GATE_RECOVERY_FAILURE_NOT_OBSERVED"
+            )
+            raise ClosureError(code)
 
     def _bind(self, event, expected_head):
         event_hash, config_hash = digest(event), digest(self.config)
