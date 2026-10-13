@@ -411,3 +411,120 @@ def test_shared_clock_is_not_independent_truth_control(witness, subject, monkeyp
     receipt = again.receive(forged_time, nonce)
     assert tw.verify_receipt(receipt, forged_time, again.manifest, **arguments(again, subject, nonce))
     assert receipt["body"]["evaluated_at"] == timestamp(future)
+
+
+def authority_event(subject, *, state="RECOVERY_FAILED", at=None, role="authority"):
+    runtime = subject[3]
+    packet = subject[0]["payload"]["body"]
+    body = {
+        "event_id": "witness-bound-event",
+        "transaction_id": packet["transaction_id"],
+        "contract_hash": packet["contract_hash"],
+        "sequence": 20,
+        "previous_hash": packet["ledger_head"],
+        "state": state,
+        "refs": [],
+        "packet": None,
+        "binding": None,
+        "receipt": None,
+        "recovery_contract": None,
+        "recovery_approval": None,
+        "risk": None,
+    }
+    # This is a signer-adversary primitive probe, not an admitted ledger transition.
+    return sign(
+        load_identity(runtime.deployment.role_root(role), role),
+        "ledger-event",
+        body,
+        timestamp(at if at is not None else tw._now_ms()),
+    )
+
+
+def test_authority_recovery_failed_event_witness_is_purpose_bound(witness, subject, tmp_path):
+    event, nonce = authority_event(subject), secrets.token_hex(32)
+    receipt = witness.receive(event, nonce)
+    assert receipt["body"]["subject_purpose"] == "ledger-event"
+    assert receipt["body"]["packet_hash"] == digest(event)
+    args = arguments(witness, subject, nonce)
+    with pytest.raises(ClosureError, match="WITNESS_SUBJECT_PURPOSE_MISMATCH"):
+        tw.verify_receipt(receipt, event, witness.manifest, **args)
+    args["expected_subject_purpose"] = "ledger-event"
+    tw.ConsumerJournal.initialize(tmp_path / "event-journal.sqlite")
+    assert (
+        tw.ConsumerJournal(tmp_path / "event-journal.sqlite").consume(
+            receipt, event, witness.manifest, **args
+        )["status"]
+        == "WITNESSED"
+    )
+    assert witness.checkpoint()["sequence"] == 1
+
+
+def test_real_admitted_proven_event_is_witnessed_without_rewriting_ledger(witness, subject):
+    runtime = subject[3]
+    page = runtime.audit_export()
+    event = next(e for e in page["events"] if e["payload"]["body"]["state"] == "PROVEN")
+    before = canonical(event)
+    nonce = secrets.token_hex(32)
+    receipt = witness.receive(event, nonce)
+    assert receipt["body"]["packet_hash"] == digest(event)
+    tw.verify_receipt(
+        receipt,
+        event,
+        witness.manifest,
+        **arguments(witness, subject, nonce),
+        expected_subject_purpose="ledger-event",
+    )
+    assert canonical(event) == before
+    after = runtime.audit_export()
+    # Export signs a fresh checkpoint envelope on each call; compare its immutable chain body.
+    assert after["events"] == page["events"]
+    assert after["checkpoint"]["payload"]["body"] == page["checkpoint"]["payload"]["body"]
+
+
+@pytest.mark.parametrize("offset,code", [(120_000, "WITNESS_EVENT_FUTURE"), (-120_000, "WITNESS_EVENT_LATE")])
+def test_signer_future_recovery_failed_event_refused(witness, subject, offset, code):
+    event = authority_event(subject, at=tw._now_ms() + offset)
+    with pytest.raises(ClosureError, match=code):
+        witness.receive(event, secrets.token_hex(32))
+    assert witness.checkpoint()["sequence"] == 0
+
+
+def test_actor_cannot_obtain_authority_event_witness(witness, subject):
+    with pytest.raises(ClosureError, match="WITNESS_EVENT_ROLE_DENIED"):
+        witness.receive(authority_event(subject, role="actor"), secrets.token_hex(32))
+
+
+@pytest.mark.parametrize("subject_value", [{"payload": []}, {"payload": {"purpose": []}}, None])
+def test_invalid_subject_is_contained(witness, subject_value):
+    with pytest.raises(ClosureError, match="WITNESS_SUBJECT_PURPOSE_DENIED"):
+        witness.receive(subject_value, secrets.token_hex(32))
+
+
+def test_closure_receipt_cannot_be_consumed_as_ledger_event(witness, subject):
+    nonce = secrets.token_hex(32)
+    receipt = witness.receive(subject[0], nonce)
+    with pytest.raises(ClosureError, match="WITNESS_SUBJECT_PURPOSE_MISMATCH"):
+        tw.verify_receipt(
+            receipt,
+            subject[0],
+            witness.manifest,
+            **arguments(witness, subject, nonce),
+            expected_subject_purpose="ledger-event",
+        )
+
+
+def test_legacy_closure_only_receipt_and_manifest_remain_verifiable(witness, subject):
+    nonce = secrets.token_hex(32)
+    receipt = witness.receive(subject[0], nonce)
+    manifest = copy.deepcopy(witness.manifest)
+    manifest.pop("subject_purposes")
+    receipt["body"].pop("subject_purpose")
+    receipt["body"]["manifest_hash"] = digest(manifest)
+    receipt["signature"] = witness.key.private_key.sign(tw.DOMAIN + canonical(receipt["body"])).hex()
+    original = canonical(receipt)
+    args = arguments(witness, subject, nonce)
+    args["expected_witness_hash"] = digest(manifest)
+    assert tw.verify_receipt(receipt, subject[0], manifest, **args)
+    assert canonical(receipt) == original
+    with pytest.raises(ClosureError, match="WITNESS_SUBJECT_PURPOSE_DENIED"):
+        tw._subject(authority_event(subject), subject[1], manifest, tw._now_ms())

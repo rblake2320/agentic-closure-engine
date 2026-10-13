@@ -1,6 +1,6 @@
 # Separately enrolled closure reception witness
 
-The witness observes **receipt of an exact authenticated closure packet** and signs its digest,
+The witness observes **receipt of authenticated closure packet canonical bytes** and signs their digest,
 authority trust digest, subject, evaluation timestamp, reception timestamp, fresh client nonce,
 sequence and previous receipt digest. It does not evaluate the technical verdict. A late or
 unavailable witness does not rewrite a historical `PROVEN`; it prevents a consumer configured
@@ -42,6 +42,24 @@ before its own acceptance operation. These are explicit sidecar commands; instal
 module alone does **not** change the existing ACE ledger's acceptance policy. The module
 does not modify old contracts, signed packets or ledger events. Integrations may call
 `ConsumerJournal.consume` with the same pins and nonce instead of spawning the CLI.
+
+New enrollment also permits authenticated `ledger-event` subjects signed by the enrolled
+**authority**, only in native ledger states authorizing that role (including `RECOVERY_FAILED`).
+Actor-, owner- or other-role events cannot obtain this authority-event receipt. Pass the
+signed event through `request --packet event.json`; verify it with
+`verify --subject-purpose ledger-event --packet event.json`, or pass
+`expected_subject_purpose="ledger-event"` to the library consumer. Receipt `subject_purpose`
+is signed and consumers require exact purpose agreement. The default is `closure-packet`:
+an event receipt cannot be silently accepted as a closure receipt.
+
+For events, the witness bounds signed `created_at` against its own clock and checks any
+attached closure packet's timestamps. It does **not** decide whether the state transition
+or recovery deadline is correct; native ledger replay remains necessary. Custody must
+verify/consume an event receipt **before appending** when its policy requires witnessed
+event time. Installing this module does not enforce that integration. Its future tolerance
+is a declared clock-skew allowance, not exact UTC equality. Legacy closure-only witness
+manifests/receipts remain readable unchanged; a legacy manifest does not grant event
+witnessing. Broader enrollment requires a new independently retained pin.
 
 The CLI `verify` always consumes the receipt into a durable journal. `verify_receipt` is a
 read-only library primitive; repeated read-only verification is intentionally permitted and
@@ -107,7 +125,10 @@ Only authenticated `POST /receipts` and `GET /checkpoint` are supported.
 
 `tests/test_time_witness.py` deploys a real disposable HTTP target with real persistent ACE
 role identities, obtains a genuine `PROVEN` packet, and runs the witness in a separate process.
-It kills/restarts the service and tests exact retries plus fresh sequences. Other controls
+It kills/restarts the service and tests exact retries plus fresh sequences. A real admitted
+`PROVEN` ledger event is witnessed without changing its original canonical bytes. Separate
+signer-adversary tests submit signed, deliberately future-dated `RECOVERY_FAILED` events;
+these are primitive probes, not admitted real recovery transitions. Other controls
 cover distinct enrollment, substituted pins/keys/packets, invented authority, signed nonce
 replay, late/future packet times, receipt age, equal/regressing/stepped clocks, altered history,
 externally checkpointed truncation, missing DB, concurrent retry and refusal of remote HTTP.

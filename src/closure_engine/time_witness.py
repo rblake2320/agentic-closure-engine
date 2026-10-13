@@ -21,6 +21,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .crypto import TrustStore, verify
+from .ledger import ROLES as EVENT_ROLES
 from .protocol import ClosureError, canonical, digest, milliseconds, strict_loads, timestamp
 from .runtime.files import create_exclusive, create_json
 from .runtime.files import read_json as _read_json
@@ -61,6 +62,10 @@ def _manifest(value):
         "future_tolerance_ms",
         "clock_step_tolerance_ms",
     }
+    if isinstance(value, dict) and "subject_purposes" in value:
+        fields.add("subject_purposes")
+        if value["subject_purposes"] != ["closure-packet", "ledger-event"]:
+            raise ClosureError("WITNESS_MANIFEST_INVALID")
     if (
         not isinstance(value, dict)
         or set(value) != fields
@@ -135,6 +140,7 @@ def initialize(
         {
             "version": "v1",
             "purpose": "closure-reception-witness",
+            "subject_purposes": ["closure-packet", "ledger-event"],
             "issuer": issuer,
             "key_id": public["key_id"],
             "public_key": public["public_key"],
@@ -207,6 +213,13 @@ def _signature(receipt, manifest):
         "sequence",
         "previous_hash",
     }
+    if "subject_purpose" in body:
+        fields.add("subject_purpose")
+        if not isinstance(body["subject_purpose"], str) or body["subject_purpose"] not in {
+            "closure-packet",
+            "ledger-event",
+        }:
+            raise ClosureError("WITNESS_RECEIPT_INVALID")
     if set(body) != fields or body["version"] != "v1" or body["purpose"] != "closure-reception":
         raise ClosureError("WITNESS_RECEIPT_INVALID")
     if (
@@ -249,6 +262,32 @@ def _packet(packet, trust, manifest, at):
     if at - milliseconds(body["evaluated_at"]) > manifest["max_packet_age_ms"]:
         raise ClosureError("WITNESS_PACKET_LATE")
     return body
+
+
+def _subject(subject, trust, manifest, at):
+    """Dispatch by authenticated envelope purpose, with independently pinned enrollment policy."""
+    payload = subject.get("payload") if isinstance(subject, dict) else None
+    purpose = payload.get("purpose") if isinstance(payload, dict) else None
+    if purpose not in manifest.get("subject_purposes", ["closure-packet"]):
+        raise ClosureError("WITNESS_SUBJECT_PURPOSE_DENIED")
+    if purpose == "closure-packet":
+        return _packet(subject, trust, manifest, at)
+    body = verify(subject, "ledger-event", trust)
+    record = trust.record(subject["payload"]["key_id"])
+    if record["role"] != "authority" or "authority" not in EVENT_ROLES[body["state"]]:
+        raise ClosureError("WITNESS_EVENT_ROLE_DENIED")
+    created = subject["payload"]["created_at"]
+    if milliseconds(created) > at + manifest["future_tolerance_ms"]:
+        raise ClosureError("WITNESS_EVENT_FUTURE")
+    if at - milliseconds(created) > manifest["max_packet_age_ms"]:
+        raise ClosureError("WITNESS_EVENT_LATE")
+    if body.get("packet") is not None:
+        _packet(body["packet"], trust, manifest, at)
+    return {
+        "transaction_id": body["transaction_id"],
+        "contract_hash": body["contract_hash"],
+        "evaluated_at": created,
+    }
 
 
 class Witness:
@@ -328,7 +367,7 @@ class Witness:
                 raise ClosureError("WITNESS_CLOCK_DISCONTINUITY")
             if previous_at is not None and at < previous_at:
                 raise ClosureError("WITNESS_CLOCK_REGRESSION")
-            packet_body = _packet(packet, self.trust, self.manifest, at)
+            packet_body = _subject(packet, self.trust, self.manifest, at)
             old = db.execute("SELECT envelope FROM receipts WHERE nonce=?", (nonce,)).fetchone()
             if old:
                 receipt = strict_loads(old[0])
@@ -338,6 +377,7 @@ class Witness:
             body = {
                 "version": "v1",
                 "purpose": "closure-reception",
+                "subject_purpose": packet["payload"]["purpose"],
                 "manifest_hash": digest(self.manifest),
                 "issuer": self.manifest["issuer"],
                 "key_id": self.manifest["key_id"],
@@ -369,10 +409,13 @@ def verify_receipt(
     authority_trust,
     expected_authority_hash,
     expected_nonce,
+    expected_subject_purpose="closure-packet",
 ):
     """Verify bindings and freshness with consumer system UTC; consume separately for replay denial."""
     _enrollment(manifest, expected_witness_hash, authority_trust, expected_authority_hash)
     body = _signature(receipt, manifest)
+    if body.get("subject_purpose", "closure-packet") != expected_subject_purpose:
+        raise ClosureError("WITNESS_SUBJECT_PURPOSE_MISMATCH")
     if body["nonce"] != expected_nonce:
         raise ClosureError("WITNESS_NONCE_MISMATCH")
     observed = milliseconds(body["received_at"])
@@ -381,7 +424,7 @@ def verify_receipt(
         raise ClosureError("WITNESS_RECEIPT_FUTURE")
     if now - observed > manifest["max_receipt_age_ms"]:
         raise ClosureError("WITNESS_RECEIPT_STALE")
-    packet_body = _packet(packet, authority_trust, manifest, observed)
+    packet_body = _subject(packet, authority_trust, manifest, observed)
     if (
         digest(packet) != body["packet_hash"]
         or packet_body["transaction_id"] != body["transaction_id"]
@@ -529,6 +572,9 @@ def main(argv=None):
     journal = sub.add_parser("journal-init")
     journal.add_argument("--journal", required=True)
     consumer = sub.add_parser("verify")
+    consumer.add_argument(
+        "--subject-purpose", choices=["closure-packet", "ledger-event"], default="closure-packet"
+    )
     for arg in (
         "receipt",
         "packet",
@@ -588,6 +634,7 @@ def main(argv=None):
                 authority_trust=_trust(read_json(args.authority_trust), args.expected_authority_hash),
                 expected_authority_hash=args.expected_authority_hash,
                 expected_nonce=args.nonce,
+                expected_subject_purpose=args.subject_purpose,
             )
         print(json.dumps(result, sort_keys=True))
         return 0
